@@ -14,6 +14,24 @@ endif()
 
 find_package(Vulkan REQUIRED)
 
+find_program(GLSLC_EXECUTABLE
+    NAMES glslc
+    HINTS "$ENV{VULKAN_SDK}"
+    PATH_SUFFIXES Bin bin
+)
+
+if(NOT GLSLC_EXECUTABLE)
+    file(GLOB VULKAN_SDK_GLSLC_CANDIDATES "C:/VulkanSDK/*/Bin/glslc.exe")
+    if(VULKAN_SDK_GLSLC_CANDIDATES)
+        list(SORT VULKAN_SDK_GLSLC_CANDIDATES COMPARE NATURAL ORDER DESCENDING)
+        list(GET VULKAN_SDK_GLSLC_CANDIDATES 0 GLSLC_EXECUTABLE)
+    endif()
+endif()
+
+if(NOT GLSLC_EXECUTABLE)
+    message(FATAL_ERROR "Vulkan shader compiler glslc was not found")
+endif()
+
 add_executable(game WIN32
     src/main.c
     src/app.c
@@ -22,6 +40,15 @@ add_executable(game WIN32
 )
 
 target_link_libraries(game PRIVATE Vulkan::Vulkan)
+
+set(SHADER_OUTPUT_DIR "$<TARGET_FILE_DIR:game>/shaders")
+add_custom_command(
+    TARGET game POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${SHADER_OUTPUT_DIR}"
+    COMMAND "${GLSLC_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/shaders/cube.vert" -o "${SHADER_OUTPUT_DIR}/cube.vert.spv"
+    COMMAND "${GLSLC_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/shaders/cube.frag" -o "${SHADER_OUTPUT_DIR}/cube.frag.spv"
+    COMMENT "Compiling Vulkan cube shaders"
+)
 
 target_compile_definitions(game PRIVATE
     $<$<CONFIG:Debug>:GAME_ENABLE_VULKAN_VALIDATION=1>

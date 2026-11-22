@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <math.h>
+#include <stddef.h>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -42,6 +44,18 @@ struct VulkanState
     VkFence *in_flight_fences;
     uint32_t in_flight_count;
     uint32_t current_frame;
+    VkShaderModule vertex_shader_module;
+    VkShaderModule fragment_shader_module;
+    VkDescriptorSetLayout descriptor_set_layout;
+    VkDescriptorPool descriptor_pool;
+    VkDescriptorSet *descriptor_sets;
+    VkBuffer *uniform_buffers;
+    VkDeviceMemory *uniform_memories;
+    void **uniform_mappings;
+    VkPipelineLayout pipeline_layout;
+    VkPipeline graphics_pipeline;
+    VkBuffer vertex_buffer;
+    VkDeviceMemory vertex_memory;
     void *native_window;
 };
 
@@ -202,6 +216,33 @@ uint32_t vulkan_choose_in_flight_limit(uint32_t swapchain_image_count,
     return preferred_limit < swapchain_image_count
                ? preferred_limit
                : swapchain_image_count;
+}
+
+uint32_t vulkan_cube_vertex_count(void)
+{
+    return 36;
+}
+
+bool vulkan_build_perspective(float aspect, float *matrix)
+{
+    const float fov_y = 45.0f * (3.14159265358979323846f / 180.0f);
+    float f;
+    float tan_half_fov;
+
+    if (matrix == NULL || !isfinite(aspect) || aspect <= 0.0f)
+    {
+        return false;
+    }
+
+    tan_half_fov = tanf(fov_y * 0.5f);
+    f = 1.0f / tan_half_fov;
+    memset(matrix, 0, sizeof(float) * 16);
+    matrix[0] = f / aspect;
+    matrix[5] = -f;
+    matrix[10] = 100.1f / 99.9f;
+    matrix[11] = 1.0f;
+    matrix[14] = -(2.0f * 100.0f * 0.1f) / 99.9f;
+    return true;
 }
 
 #ifndef _WIN32
@@ -627,6 +668,220 @@ static AppResult find_depth_format(VulkanState *state)
     return APP_RESULT_OK;
 }
 
+static AppResult create_buffer(VulkanState *state,
+                               VkDeviceSize size,
+                               VkBufferUsageFlags usage,
+                               VkMemoryPropertyFlags properties,
+                               VkBuffer *buffer,
+                               VkDeviceMemory *memory)
+{
+    VkBufferCreateInfo buffer_info;
+    VkMemoryRequirements requirements;
+    VkMemoryAllocateInfo allocate_info;
+    uint32_t memory_type;
+
+    memset(&buffer_info, 0, sizeof(buffer_info));
+    buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    buffer_info.size = size;
+    buffer_info.usage = usage;
+    buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (vkCreateBuffer(state->device, &buffer_info, NULL, buffer) != VK_SUCCESS)
+    {
+        return APP_RESULT_INITIALIZATION_FAILED;
+    }
+    vkGetBufferMemoryRequirements(state->device, *buffer, &requirements);
+    memory_type = find_memory_type(state, requirements.memoryTypeBits,
+                                   properties);
+    if (memory_type == UINT32_MAX)
+    {
+        return APP_RESULT_INITIALIZATION_FAILED;
+    }
+    memset(&allocate_info, 0, sizeof(allocate_info));
+    allocate_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocate_info.allocationSize = requirements.size;
+    allocate_info.memoryTypeIndex = memory_type;
+    if (vkAllocateMemory(state->device, &allocate_info, NULL, memory) !=
+        VK_SUCCESS ||
+        vkBindBufferMemory(state->device, *buffer, *memory, 0) != VK_SUCCESS)
+    {
+        return APP_RESULT_INITIALIZATION_FAILED;
+    }
+    return APP_RESULT_OK;
+}
+
+static void add_cube_vertex(VulkanVertex *vertices,
+                            uint32_t *index,
+                            float px, float py, float pz,
+                            float nx, float ny, float nz)
+{
+    vertices[*index].position[0] = px;
+    vertices[*index].position[1] = py;
+    vertices[*index].position[2] = pz;
+    vertices[*index].normal[0] = nx;
+    vertices[*index].normal[1] = ny;
+    vertices[*index].normal[2] = nz;
+    *index += 1;
+}
+
+static void fill_cube_vertices(VulkanVertex *vertices)
+{
+    uint32_t i = 0;
+    add_cube_vertex(vertices, &i, -0.7f, -0.7f,  0.7f, 0,0,1);
+    add_cube_vertex(vertices, &i,  0.7f, -0.7f,  0.7f, 0,0,1);
+    add_cube_vertex(vertices, &i,  0.7f,  0.7f,  0.7f, 0,0,1);
+    add_cube_vertex(vertices, &i, -0.7f, -0.7f,  0.7f, 0,0,1);
+    add_cube_vertex(vertices, &i,  0.7f,  0.7f,  0.7f, 0,0,1);
+    add_cube_vertex(vertices, &i, -0.7f,  0.7f,  0.7f, 0,0,1);
+    add_cube_vertex(vertices, &i,  0.7f, -0.7f, -0.7f, 0,0,-1);
+    add_cube_vertex(vertices, &i, -0.7f, -0.7f, -0.7f, 0,0,-1);
+    add_cube_vertex(vertices, &i, -0.7f,  0.7f, -0.7f, 0,0,-1);
+    add_cube_vertex(vertices, &i,  0.7f, -0.7f, -0.7f, 0,0,-1);
+    add_cube_vertex(vertices, &i, -0.7f,  0.7f, -0.7f, 0,0,-1);
+    add_cube_vertex(vertices, &i,  0.7f,  0.7f, -0.7f, 0,0,-1);
+    add_cube_vertex(vertices, &i, -0.7f, -0.7f, -0.7f, -1,0,0);
+    add_cube_vertex(vertices, &i, -0.7f, -0.7f,  0.7f, -1,0,0);
+    add_cube_vertex(vertices, &i, -0.7f,  0.7f,  0.7f, -1,0,0);
+    add_cube_vertex(vertices, &i, -0.7f, -0.7f, -0.7f, -1,0,0);
+    add_cube_vertex(vertices, &i, -0.7f,  0.7f,  0.7f, -1,0,0);
+    add_cube_vertex(vertices, &i, -0.7f,  0.7f, -0.7f, -1,0,0);
+    add_cube_vertex(vertices, &i,  0.7f, -0.7f,  0.7f, 1,0,0);
+    add_cube_vertex(vertices, &i,  0.7f, -0.7f, -0.7f, 1,0,0);
+    add_cube_vertex(vertices, &i,  0.7f,  0.7f, -0.7f, 1,0,0);
+    add_cube_vertex(vertices, &i,  0.7f, -0.7f,  0.7f, 1,0,0);
+    add_cube_vertex(vertices, &i,  0.7f,  0.7f, -0.7f, 1,0,0);
+    add_cube_vertex(vertices, &i,  0.7f,  0.7f,  0.7f, 1,0,0);
+    add_cube_vertex(vertices, &i, -0.7f,  0.7f,  0.7f, 0,1,0);
+    add_cube_vertex(vertices, &i,  0.7f,  0.7f,  0.7f, 0,1,0);
+    add_cube_vertex(vertices, &i,  0.7f,  0.7f, -0.7f, 0,1,0);
+    add_cube_vertex(vertices, &i, -0.7f,  0.7f,  0.7f, 0,1,0);
+    add_cube_vertex(vertices, &i,  0.7f,  0.7f, -0.7f, 0,1,0);
+    add_cube_vertex(vertices, &i, -0.7f,  0.7f, -0.7f, 0,1,0);
+    add_cube_vertex(vertices, &i, -0.7f, -0.7f, -0.7f, 0,-1,0);
+    add_cube_vertex(vertices, &i,  0.7f, -0.7f, -0.7f, 0,-1,0);
+    add_cube_vertex(vertices, &i,  0.7f, -0.7f,  0.7f, 0,-1,0);
+    add_cube_vertex(vertices, &i, -0.7f, -0.7f, -0.7f, 0,-1,0);
+    add_cube_vertex(vertices, &i,  0.7f, -0.7f,  0.7f, 0,-1,0);
+    add_cube_vertex(vertices, &i, -0.7f, -0.7f,  0.7f, 0,-1,0);
+}
+
+static void build_look_at(float eye_x, float eye_y, float eye_z,
+                          float *matrix)
+{
+    float fx = -eye_x, fy = -eye_y, fz = -eye_z;
+    float length = sqrtf(fx*fx + fy*fy + fz*fz);
+    float ux, uy, uz, sx, sy, sz;
+    fx /= length; fy /= length; fz /= length;
+    ux = 0.0f; uy = 1.0f; uz = 0.0f;
+    sx = fy*uz - fz*uy;
+    sy = fz*ux - fx*uz;
+    sz = fx*uy - fy*ux;
+    length = sqrtf(sx*sx + sy*sy + sz*sz);
+    sx /= length; sy /= length; sz /= length;
+    ux = sy*fz - sz*fy;
+    uy = sz*fx - sx*fz;
+    uz = sx*fy - sy*fx;
+    memset(matrix, 0, sizeof(float) * 16);
+    matrix[0] = sx; matrix[4] = sy; matrix[8] = sz;
+    matrix[1] = ux; matrix[5] = uy; matrix[9] = uz;
+    matrix[2] = -fx; matrix[6] = -fy; matrix[10] = -fz;
+    matrix[12] = -(sx*eye_x + sy*eye_y + sz*eye_z);
+    matrix[13] = -(ux*eye_x + uy*eye_y + uz*eye_z);
+    matrix[14] = -(-fx*eye_x + -fy*eye_y + -fz*eye_z);
+    matrix[15] = 1.0f;
+}
+
+static void multiply_mat4(const float *a, const float *b, float *out)
+{
+    uint32_t column;
+    uint32_t row;
+    memset(out, 0, sizeof(float) * 16);
+    for (column = 0; column < 4; ++column)
+    {
+        for (row = 0; row < 4; ++row)
+        {
+            out[column * 4 + row] =
+                a[row + 0] * b[column * 4 + 0] +
+                a[row + 4] * b[column * 4 + 1] +
+                a[row + 8] * b[column * 4 + 2] +
+                a[row + 12] * b[column * 4 + 3];
+        }
+    }
+}
+
+static void build_model_matrix(float *matrix)
+{
+    memset(matrix, 0, sizeof(float) * 16);
+    matrix[0] = 1.0f;
+    matrix[5] = 1.0f;
+    matrix[10] = 1.0f;
+    matrix[15] = 1.0f;
+}
+
+static AppResult create_shader_module(VulkanState *state,
+                                      const char *relative_path,
+                                      VkShaderModule *module)
+{
+    char executable_path[MAX_PATH];
+    char shader_path[MAX_PATH];
+    DWORD length;
+    FILE *file;
+    long size;
+    char *code;
+    VkShaderModuleCreateInfo info;
+    char *slash;
+
+    length = GetModuleFileNameA(NULL, executable_path, MAX_PATH);
+    if (length == 0 || length >= MAX_PATH)
+    {
+        return APP_RESULT_INITIALIZATION_FAILED;
+    }
+    slash = strrchr(executable_path, '\\');
+    if (slash == NULL)
+    {
+        return APP_RESULT_INITIALIZATION_FAILED;
+    }
+    *slash = '\0';
+    snprintf(shader_path, MAX_PATH, "%s\\shaders\\%s",
+             executable_path, relative_path);
+    if (fopen_s(&file, shader_path, "rb") != 0 || file == NULL)
+    {
+        fprintf(stderr, "Unable to open compiled shader: %s\n", shader_path);
+        return APP_RESULT_INITIALIZATION_FAILED;
+    }
+    if (fseek(file, 0, SEEK_END) != 0)
+    {
+        fclose(file);
+        return APP_RESULT_INITIALIZATION_FAILED;
+    }
+    size = ftell(file);
+    if (size <= 0 || (size % 4) != 0)
+    {
+        fclose(file);
+        return APP_RESULT_INITIALIZATION_FAILED;
+    }
+    rewind(file);
+    code = (char *)malloc((size_t)size);
+    if (code == NULL || fread(code, 1, (size_t)size, file) != (size_t)size)
+    {
+        free(code);
+        fclose(file);
+        return APP_RESULT_INITIALIZATION_FAILED;
+    }
+    fclose(file);
+    memset(&info, 0, sizeof(info));
+    info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    info.codeSize = (size_t)size;
+    info.pCode = (const uint32_t *)code;
+    if (vkCreateShaderModule(state->device, &info, NULL, module) !=
+        VK_SUCCESS)
+    {
+        free(code);
+        return APP_RESULT_INITIALIZATION_FAILED;
+    }
+    free(code);
+    return APP_RESULT_OK;
+}
+
 static void cleanup_swapchain_resources(VulkanState *state)
 {
     uint32_t i;
@@ -635,6 +890,75 @@ static void cleanup_swapchain_resources(VulkanState *state)
         return;
     }
     vkDeviceWaitIdle(state->device);
+
+    if (state->graphics_pipeline != VK_NULL_HANDLE)
+    {
+        vkDestroyPipeline(state->device, state->graphics_pipeline, NULL);
+        state->graphics_pipeline = VK_NULL_HANDLE;
+    }
+    if (state->pipeline_layout != VK_NULL_HANDLE)
+    {
+        vkDestroyPipelineLayout(state->device, state->pipeline_layout, NULL);
+        state->pipeline_layout = VK_NULL_HANDLE;
+    }
+    if (state->descriptor_pool != VK_NULL_HANDLE)
+    {
+        vkDestroyDescriptorPool(state->device, state->descriptor_pool, NULL);
+        state->descriptor_pool = VK_NULL_HANDLE;
+    }
+    if (state->descriptor_set_layout != VK_NULL_HANDLE)
+    {
+        vkDestroyDescriptorSetLayout(state->device,
+                                     state->descriptor_set_layout, NULL);
+        state->descriptor_set_layout = VK_NULL_HANDLE;
+    }
+    if (state->uniform_buffers != NULL)
+    {
+        for (i = 0; i < state->in_flight_count; ++i)
+        {
+            if (state->uniform_mappings != NULL &&
+                state->uniform_mappings[i] != NULL)
+            {
+                vkUnmapMemory(state->device, state->uniform_memories[i]);
+            }
+            if (state->uniform_memories[i] != VK_NULL_HANDLE)
+            {
+                vkFreeMemory(state->device, state->uniform_memories[i], NULL);
+            }
+            if (state->uniform_buffers[i] != VK_NULL_HANDLE)
+            {
+                vkDestroyBuffer(state->device, state->uniform_buffers[i], NULL);
+            }
+        }
+        free(state->uniform_mappings);
+        free(state->uniform_memories);
+        free(state->uniform_buffers);
+        state->uniform_mappings = NULL;
+        state->uniform_memories = NULL;
+        state->uniform_buffers = NULL;
+    }
+    if (state->vertex_buffer != VK_NULL_HANDLE)
+    {
+        vkDestroyBuffer(state->device, state->vertex_buffer, NULL);
+        state->vertex_buffer = VK_NULL_HANDLE;
+    }
+    if (state->vertex_memory != VK_NULL_HANDLE)
+    {
+        vkFreeMemory(state->device, state->vertex_memory, NULL);
+        state->vertex_memory = VK_NULL_HANDLE;
+    }
+    free(state->descriptor_sets);
+    state->descriptor_sets = NULL;
+    if (state->vertex_shader_module != VK_NULL_HANDLE)
+    {
+        vkDestroyShaderModule(state->device, state->vertex_shader_module, NULL);
+        state->vertex_shader_module = VK_NULL_HANDLE;
+    }
+    if (state->fragment_shader_module != VK_NULL_HANDLE)
+    {
+        vkDestroyShaderModule(state->device, state->fragment_shader_module, NULL);
+        state->fragment_shader_module = VK_NULL_HANDLE;
+    }
 
     if (state->framebuffers != NULL)
     {
@@ -898,6 +1222,289 @@ static AppResult create_depth_resources(VulkanState *state)
     return APP_RESULT_OK;
 }
 
+static AppResult create_pipeline_resources(VulkanState *state)
+{
+    VkDescriptorSetLayoutBinding descriptor_binding;
+    VkDescriptorSetLayoutCreateInfo descriptor_layout_info;
+    VkDescriptorPoolSize pool_size;
+    VkDescriptorPoolCreateInfo pool_info;
+    VkDescriptorSetAllocateInfo descriptor_allocate_info;
+    VkPushConstantRange push_constant;
+    VkPipelineLayoutCreateInfo pipeline_layout_info;
+    VkPipelineShaderStageCreateInfo shader_stages[2];
+    VkVertexInputBindingDescription vertex_binding;
+    VkVertexInputAttributeDescription vertex_attributes[2];
+    VkPipelineVertexInputStateCreateInfo vertex_input;
+    VkPipelineInputAssemblyStateCreateInfo input_assembly;
+    VkViewport viewport;
+    VkRect2D scissor;
+    VkPipelineViewportStateCreateInfo viewport_state;
+    VkPipelineRasterizationStateCreateInfo rasterization;
+    VkPipelineMultisampleStateCreateInfo multisampling;
+    VkPipelineDepthStencilStateCreateInfo depth_stencil;
+    VkPipelineColorBlendAttachmentState color_blend_attachment;
+    VkPipelineColorBlendStateCreateInfo color_blending;
+    VkGraphicsPipelineCreateInfo pipeline_info;
+    VkDescriptorBufferInfo descriptor_buffer_info;
+    VkWriteDescriptorSet descriptor_write;
+    VulkanVertex cube_vertices[36];
+    void *mapped;
+    uint32_t i;
+    VkResult result;
+
+    if (create_shader_module(state, "cube.vert.spv",
+                             &state->vertex_shader_module) != APP_RESULT_OK ||
+        create_shader_module(state, "cube.frag.spv",
+                             &state->fragment_shader_module) != APP_RESULT_OK)
+    {
+        return APP_RESULT_INITIALIZATION_FAILED;
+    }
+
+    fill_cube_vertices(cube_vertices);
+    if (create_buffer(state,
+                      sizeof(cube_vertices),
+                      VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                      &state->vertex_buffer,
+                      &state->vertex_memory) != APP_RESULT_OK ||
+        vkMapMemory(state->device, state->vertex_memory, 0,
+                    sizeof(cube_vertices), 0, &mapped) != VK_SUCCESS)
+    {
+        return APP_RESULT_INITIALIZATION_FAILED;
+    }
+    memcpy(mapped, cube_vertices, sizeof(cube_vertices));
+    vkUnmapMemory(state->device, state->vertex_memory);
+
+    memset(&descriptor_binding, 0, sizeof(descriptor_binding));
+    descriptor_binding.binding = 0;
+    descriptor_binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    descriptor_binding.descriptorCount = 1;
+    descriptor_binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    memset(&descriptor_layout_info, 0, sizeof(descriptor_layout_info));
+    descriptor_layout_info.sType =
+        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    descriptor_layout_info.bindingCount = 1;
+    descriptor_layout_info.pBindings = &descriptor_binding;
+    if (vkCreateDescriptorSetLayout(
+            state->device, &descriptor_layout_info, NULL,
+            &state->descriptor_set_layout) != VK_SUCCESS)
+    {
+        return APP_RESULT_INITIALIZATION_FAILED;
+    }
+
+    memset(&push_constant, 0, sizeof(push_constant));
+    push_constant.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    push_constant.offset = 0;
+    push_constant.size = sizeof(VulkanPushConstants);
+    memset(&pipeline_layout_info, 0, sizeof(pipeline_layout_info));
+    pipeline_layout_info.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipeline_layout_info.setLayoutCount = 1;
+    pipeline_layout_info.pSetLayouts = &state->descriptor_set_layout;
+    pipeline_layout_info.pushConstantRangeCount = 1;
+    pipeline_layout_info.pPushConstantRanges = &push_constant;
+    if (vkCreatePipelineLayout(state->device, &pipeline_layout_info, NULL,
+                               &state->pipeline_layout) != VK_SUCCESS)
+    {
+        return APP_RESULT_INITIALIZATION_FAILED;
+    }
+
+    state->uniform_buffers =
+        (VkBuffer *)calloc(state->in_flight_count, sizeof(VkBuffer));
+    state->uniform_memories =
+        (VkDeviceMemory *)calloc(state->in_flight_count,
+                                 sizeof(VkDeviceMemory));
+    state->uniform_mappings =
+        (void **)calloc(state->in_flight_count, sizeof(void *));
+    state->descriptor_sets =
+        (VkDescriptorSet *)calloc(state->in_flight_count,
+                                  sizeof(VkDescriptorSet));
+    if (state->uniform_buffers == NULL ||
+        state->uniform_memories == NULL ||
+        state->uniform_mappings == NULL ||
+        state->descriptor_sets == NULL)
+    {
+        return APP_RESULT_INITIALIZATION_FAILED;
+    }
+
+    for (i = 0; i < state->in_flight_count; ++i)
+    {
+        if (create_buffer(state,
+                          sizeof(VulkanUniformBufferObject),
+                          VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                          &state->uniform_buffers[i],
+                          &state->uniform_memories[i]) != APP_RESULT_OK ||
+            vkMapMemory(state->device, state->uniform_memories[i], 0,
+                        sizeof(VulkanUniformBufferObject), 0,
+                        &state->uniform_mappings[i]) != VK_SUCCESS)
+        {
+            return APP_RESULT_INITIALIZATION_FAILED;
+        }
+    }
+
+    memset(&pool_size, 0, sizeof(pool_size));
+    pool_size.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    pool_size.descriptorCount = state->in_flight_count;
+    memset(&pool_info, 0, sizeof(pool_info));
+    pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    pool_info.poolSizeCount = 1;
+    pool_info.pPoolSizes = &pool_size;
+    pool_info.maxSets = state->in_flight_count;
+    if (vkCreateDescriptorPool(state->device, &pool_info, NULL,
+                               &state->descriptor_pool) != VK_SUCCESS)
+    {
+        return APP_RESULT_INITIALIZATION_FAILED;
+    }
+    memset(&descriptor_allocate_info, 0,
+           sizeof(descriptor_allocate_info));
+    descriptor_allocate_info.sType =
+        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    descriptor_allocate_info.descriptorPool = state->descriptor_pool;
+    descriptor_allocate_info.descriptorSetCount = 1;
+    descriptor_allocate_info.pSetLayouts =
+        &state->descriptor_set_layout;
+    for (i = 0; i < state->in_flight_count; ++i)
+    {
+        if (vkAllocateDescriptorSets(
+                state->device, &descriptor_allocate_info,
+                &state->descriptor_sets[i]) != VK_SUCCESS)
+        {
+            return APP_RESULT_INITIALIZATION_FAILED;
+        }
+        memset(&descriptor_buffer_info, 0,
+               sizeof(descriptor_buffer_info));
+        descriptor_buffer_info.buffer = state->uniform_buffers[i];
+        descriptor_buffer_info.offset = 0;
+        descriptor_buffer_info.range =
+            sizeof(VulkanUniformBufferObject);
+        memset(&descriptor_write, 0, sizeof(descriptor_write));
+        descriptor_write.sType =
+            VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        descriptor_write.dstSet = state->descriptor_sets[i];
+        descriptor_write.dstBinding = 0;
+        descriptor_write.descriptorCount = 1;
+        descriptor_write.descriptorType =
+            VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        descriptor_write.pBufferInfo = &descriptor_buffer_info;
+        vkUpdateDescriptorSets(state->device, 1, &descriptor_write,
+                               0, NULL);
+    }
+
+    memset(&shader_stages, 0, sizeof(shader_stages));
+    shader_stages[0].sType =
+        VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    shader_stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    shader_stages[0].module = state->vertex_shader_module;
+    shader_stages[0].pName = "main";
+    shader_stages[1].sType =
+        VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    shader_stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    shader_stages[1].module = state->fragment_shader_module;
+    shader_stages[1].pName = "main";
+
+    memset(&vertex_binding, 0, sizeof(vertex_binding));
+    vertex_binding.binding = 0;
+    vertex_binding.stride = sizeof(VulkanVertex);
+    vertex_binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    memset(vertex_attributes, 0, sizeof(vertex_attributes));
+    vertex_attributes[0].location = 0;
+    vertex_attributes[0].binding = 0;
+    vertex_attributes[0].format = VK_FORMAT_R32G32B32_SFLOAT;
+    vertex_attributes[0].offset = 0;
+    vertex_attributes[1].location = 1;
+    vertex_attributes[1].binding = 0;
+    vertex_attributes[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+    vertex_attributes[1].offset = offsetof(VulkanVertex, normal);
+    memset(&vertex_input, 0, sizeof(vertex_input));
+    vertex_input.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vertex_input.vertexBindingDescriptionCount = 1;
+    vertex_input.pVertexBindingDescriptions = &vertex_binding;
+    vertex_input.vertexAttributeDescriptionCount = 2;
+    vertex_input.pVertexAttributeDescriptions = vertex_attributes;
+
+    memset(&input_assembly, 0, sizeof(input_assembly));
+    input_assembly.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    viewport.x = 0.0f;
+    viewport.y = 0.0f;
+    viewport.width = (float)state->swapchain_extent.width;
+    viewport.height = (float)state->swapchain_extent.height;
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+    scissor.offset.x = 0;
+    scissor.offset.y = 0;
+    scissor.extent = state->swapchain_extent;
+    memset(&viewport_state, 0, sizeof(viewport_state));
+    viewport_state.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewport_state.viewportCount = 1;
+    viewport_state.pViewports = &viewport;
+    viewport_state.scissorCount = 1;
+    viewport_state.pScissors = &scissor;
+
+    memset(&rasterization, 0, sizeof(rasterization));
+    rasterization.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterization.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterization.lineWidth = 1.0f;
+    rasterization.cullMode = VK_CULL_MODE_NONE;
+    rasterization.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    memset(&multisampling, 0, sizeof(multisampling));
+    multisampling.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    memset(&depth_stencil, 0, sizeof(depth_stencil));
+    depth_stencil.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depth_stencil.depthTestEnable = VK_TRUE;
+    depth_stencil.depthWriteEnable = VK_TRUE;
+    depth_stencil.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+    memset(&color_blend_attachment, 0,
+           sizeof(color_blend_attachment));
+    color_blend_attachment.colorWriteMask =
+        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+        VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    memset(&color_blending, 0, sizeof(color_blending));
+    color_blending.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    color_blending.attachmentCount = 1;
+    color_blending.pAttachments = &color_blend_attachment;
+
+    memset(&pipeline_info, 0, sizeof(pipeline_info));
+    pipeline_info.sType =
+        VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipeline_info.stageCount = 2;
+    pipeline_info.pStages = shader_stages;
+    pipeline_info.pVertexInputState = &vertex_input;
+    pipeline_info.pInputAssemblyState = &input_assembly;
+    pipeline_info.pViewportState = &viewport_state;
+    pipeline_info.pRasterizationState = &rasterization;
+    pipeline_info.pMultisampleState = &multisampling;
+    pipeline_info.pDepthStencilState = &depth_stencil;
+    pipeline_info.pColorBlendState = &color_blending;
+    pipeline_info.layout = state->pipeline_layout;
+    pipeline_info.renderPass = state->render_pass;
+    pipeline_info.subpass = 0;
+    result = vkCreateGraphicsPipelines(
+        state->device, VK_NULL_HANDLE, 1, &pipeline_info, NULL,
+        &state->graphics_pipeline);
+    if (result != VK_SUCCESS)
+    {
+        fprintf(stderr,
+                "Vulkan graphics-pipeline creation failed with VkResult %d.\n",
+                (int)result);
+        return APP_RESULT_INITIALIZATION_FAILED;
+    }
+    return APP_RESULT_OK;
+}
+
 static AppResult create_swapchain_resources(VulkanState *state)
 {
     VkSurfaceCapabilitiesKHR capabilities;
@@ -1093,6 +1700,13 @@ static AppResult create_swapchain_resources(VulkanState *state)
         }
     }
 
+    state->in_flight_count = vulkan_choose_in_flight_limit(
+        state->swapchain_image_count, 2);
+    if (create_pipeline_resources(state) != APP_RESULT_OK)
+    {
+        return APP_RESULT_INITIALIZATION_FAILED;
+    }
+
     memset(&pool_info, 0, sizeof(pool_info));
     pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     pool_info.queueFamilyIndex = state->graphics_queue_family;
@@ -1105,8 +1719,6 @@ static AppResult create_swapchain_resources(VulkanState *state)
         return APP_RESULT_INITIALIZATION_FAILED;
     }
 
-    state->in_flight_count = vulkan_choose_in_flight_limit(
-        state->swapchain_image_count, 2);
     state->command_buffers = (VkCommandBuffer *)calloc(
         state->in_flight_count, sizeof(VkCommandBuffer));
     state->image_available_semaphores =
@@ -1380,6 +1992,12 @@ AppResult vulkan_render_frame(VulkanState *state)
     VkCommandBufferBeginInfo begin_info;
     VkRenderPassBeginInfo render_pass_info;
     VkRect2D render_area;
+    VulkanUniformBufferObject uniform;
+    VulkanPushConstants push_constants;
+    float perspective[16];
+    float view[16];
+    float view_projection[16];
+    VkDeviceSize vertex_offset;
     uint32_t image_index = 0;
     VkResult result;
 
@@ -1449,6 +2067,20 @@ AppResult vulkan_render_frame(VulkanState *state)
         return APP_RESULT_RUNTIME_FAILED;
     }
 
+    if (!vulkan_build_perspective(
+            (float)state->swapchain_extent.width /
+                (float)state->swapchain_extent.height,
+            perspective))
+    {
+        return APP_RESULT_RUNTIME_FAILED;
+    }
+    build_look_at(3.8f, 3.2f, 3.8f, view);
+    multiply_mat4(perspective, view, view_projection);
+    memcpy(uniform.view_projection, view_projection,
+           sizeof(uniform.view_projection));
+    memcpy(state->uniform_mappings[state->current_frame],
+           &uniform, sizeof(uniform));
+
     memset(clear_values, 0, sizeof(clear_values));
     clear_values[0].color.float32[0] = 0.08f;
     clear_values[0].color.float32[1] = 0.12f;
@@ -1470,6 +2102,32 @@ AppResult vulkan_render_frame(VulkanState *state)
         state->command_buffers[state->current_frame],
         &render_pass_info,
         VK_SUBPASS_CONTENTS_INLINE);
+    vkCmdBindPipeline(
+        state->command_buffers[state->current_frame],
+        VK_PIPELINE_BIND_POINT_GRAPHICS,
+        state->graphics_pipeline);
+    vkCmdBindDescriptorSets(
+        state->command_buffers[state->current_frame],
+        VK_PIPELINE_BIND_POINT_GRAPHICS,
+        state->pipeline_layout,
+        0, 1, &state->descriptor_sets[state->current_frame],
+        0, NULL);
+    build_model_matrix(push_constants.model);
+    push_constants.color[0] = 0.55f;
+    push_constants.color[1] = 0.72f;
+    push_constants.color[2] = 0.95f;
+    push_constants.color[3] = 1.0f;
+    vkCmdPushConstants(
+        state->command_buffers[state->current_frame],
+        state->pipeline_layout,
+        VK_SHADER_STAGE_VERTEX_BIT,
+        0, sizeof(push_constants), &push_constants);
+    vertex_offset = 0;
+    vkCmdBindVertexBuffers(
+        state->command_buffers[state->current_frame],
+        0, 1, &state->vertex_buffer, &vertex_offset);
+    vkCmdDraw(state->command_buffers[state->current_frame],
+              vulkan_cube_vertex_count(), 1, 0, 0);
     vkCmdEndRenderPass(
         state->command_buffers[state->current_frame]);
     if (vkEndCommandBuffer(

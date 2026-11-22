@@ -24,10 +24,11 @@ build\game-release\Release\game.exe
 - `Escape` or the window close button closes the application.
 
 The executable creates a native Windows window, initializes Vulkan instance, validation,
-device, queue, and surface state, creates the swap chain and depth resources, and runs a
-fixed-update/variable-render loop with a synchronized clear-color frame.
-Window resize and presentation failure recreate the swap-chain resources. No 3D pipeline,
-shaders, meshes, or camera are created in this step.
+device, queue, and surface state, creates the swap chain and depth resources, compiles and
+loads minimal cube shaders, and runs a fixed-update/variable-render loop with one visible
+perspective cube.
+Window resize and presentation failure recreate the swap-chain resources. No reusable mesh
+support, scene objects, or gameplay systems are created.
 
 Run the foundation tests with:
 

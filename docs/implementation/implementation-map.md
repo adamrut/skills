@@ -15,6 +15,8 @@
 - Debug builds enable `VK_LAYER_KHRONOS_validation` and `VK_EXT_debug_utils`; missing validation support is a hard initialization failure.
 - The Win32 platform boundary creates the Vulkan state after native window creation and recreates the surface path on non-empty window resize; all Vulkan resources are destroyed before window cleanup.
 - Step 4 owns the swap chain, one image view per swap-chain image, depth image and view, render pass, frame buffers, graphics command pool/buffers, in-flight fences/semaphores, clear-color submission, and presentation.
-- The frame loop waits for the current in-flight fence, acquires an image, records a clear render pass, submits to the graphics queue, presents, and advances at most two frames of flight without reusing resources.
-- Swap-chain recreation is triggered by resize or out-of-date/suboptimal acquisition/presentation; it recreates image views, depth resources, frame buffers, commands, and synchronization while retaining the surface and logical device.
-- [Vulkan test](../../game/tests/vulkan_test.c) checks queue, surface-format, present-mode, depth-format, and in-flight-limit selection without requiring a live Vulkan device.
+- Step 5 owns one documented vertex/uniform format, a perspective fixed-isometric view, one procedural cube, compiled vertex/fragment shader modules, one descriptor layout/pool and per-frame uniform buffers, a pipeline layout and graphics pipeline, and depth-tested cube drawing.
+- [CMake configuration](../../game/CMakeLists.txt) requires `glslc` and copies compiled cube shader modules beside the `game` executable through a post-build step.
+- The frame loop waits for the current in-flight fence, acquires an image, records a depth-cleared render pass, binds the graphics pipeline and per-frame cube uniforms, draws the single 36-vertex cube, submits, and presents.
+- Swap-chain recreation is triggered by resize or out-of-date/suboptimal acquisition/presentation; it recreates image views, depth resources, frame buffers, pipeline resources, commands, and synchronization while retaining the surface and logical device.
+- [Vulkan test](../../game/tests/vulkan_test.c) checks queue, surface-format, present-mode, depth-format, in-flight-limit, cube vertex count, and perspective selection without requiring a live Vulkan device.
