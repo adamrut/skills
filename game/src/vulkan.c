@@ -246,7 +246,11 @@ uint32_t vulkan_plane_index_count(void)
 
 uint32_t vulkan_scene_object_count(void)
 {
-    return 5;
+    VulkanSceneObject scene[VULKAN_LEVEL_MAX_SCENE_OBJECTS];
+    uint32_t scene_count = 0;
+    vulkan_build_level_scene(scene, VULKAN_LEVEL_MAX_SCENE_OBJECTS,
+                             &scene_count);
+    return scene_count;
 }
 
 bool vulkan_build_model_matrix(float translation_x,
@@ -301,9 +305,9 @@ bool vulkan_get_fixed_camera(VulkanFixedCamera *camera)
     {
         return false;
     }
-    camera->eye[0] = 6.0f;
-    camera->eye[1] = 6.0f;
-    camera->eye[2] = 6.0f;
+    camera->eye[0] = 7.5f;
+    camera->eye[1] = 7.5f;
+    camera->eye[2] = 7.5f;
     camera->target[0] = 0.0f;
     camera->target[1] = 0.0f;
     camera->target[2] = 0.0f;
@@ -322,12 +326,13 @@ bool vulkan_get_fixed_level_bounds(VulkanLevelBounds *bounds)
     {
         return false;
     }
-    bounds->min[0] = -6.0f;
-    bounds->min[1] = -1.0f;
-    bounds->min[2] = -6.0f;
-    bounds->max[0] = 6.0f;
-    bounds->max[1] = 6.0f;
-    bounds->max[2] = 6.0f;
+    bounds->min[0] = -4.0f;
+    bounds->min[1] = VULKAN_LEVEL_GROUND_HEIGHT;
+    bounds->min[2] = -4.0f;
+    bounds->max[0] = 4.0f;
+    bounds->max[1] = VULKAN_LEVEL_GROUND_HEIGHT +
+                      VULKAN_LEVEL_WALL_HEIGHT;
+    bounds->max[2] = 4.0f;
     return true;
 }
 
@@ -369,6 +374,412 @@ bool vulkan_clamp_camera_position(float position[3],
             position[axis] = bounds->max[axis];
         }
     }
+    return true;
+}
+
+bool vulkan_get_level_dimensions(uint32_t *width, uint32_t *height)
+{
+    if (width == NULL || height == NULL)
+    {
+        return false;
+    }
+    *width = VULKAN_LEVEL_WIDTH;
+    *height = VULKAN_LEVEL_HEIGHT;
+    return true;
+}
+
+bool vulkan_tile_is_valid(uint32_t row, uint32_t column)
+{
+    return row < VULKAN_LEVEL_HEIGHT && column < VULKAN_LEVEL_WIDTH;
+}
+
+bool vulkan_tile_to_world(uint32_t row,
+                          uint32_t column,
+                          float world[3])
+{
+    if (!vulkan_tile_is_valid(row, column) || world == NULL)
+    {
+        return false;
+    }
+    world[0] =
+        ((float)column - ((float)VULKAN_LEVEL_WIDTH - 1.0f) * 0.5f) *
+        VULKAN_LEVEL_TILE_SIZE;
+    world[1] = VULKAN_LEVEL_GROUND_HEIGHT;
+    world[2] =
+        ((float)row - ((float)VULKAN_LEVEL_HEIGHT - 1.0f) * 0.5f) *
+        VULKAN_LEVEL_TILE_SIZE;
+    return true;
+}
+
+bool vulkan_world_to_tile(const float world[3],
+                          uint32_t *row,
+                          uint32_t *column)
+{
+    float column_position;
+    float row_position;
+    int32_t column_index;
+    int32_t row_index;
+
+    if (world == NULL || row == NULL || column == NULL)
+    {
+        return false;
+    }
+    if (!isfinite(world[0]) || !isfinite(world[2]))
+    {
+        return false;
+    }
+    column_position =
+        (world[0] / VULKAN_LEVEL_TILE_SIZE) +
+        ((float)VULKAN_LEVEL_WIDTH - 1.0f) * 0.5f;
+    row_position =
+        (world[2] / VULKAN_LEVEL_TILE_SIZE) +
+        ((float)VULKAN_LEVEL_HEIGHT - 1.0f) * 0.5f;
+    column_index = (int32_t)floorf(column_position + 0.5f);
+    row_index = (int32_t)floorf(row_position + 0.5f);
+    if (row_index < 0 || column_index < 0 ||
+        row_index >= (int32_t)VULKAN_LEVEL_HEIGHT ||
+        column_index >= (int32_t)VULKAN_LEVEL_WIDTH)
+    {
+        return false;
+    }
+    *row = (uint32_t)row_index;
+    *column = (uint32_t)column_index;
+    return true;
+}
+
+bool vulkan_get_level_tile(uint32_t row,
+                           uint32_t column,
+                           VulkanLevelTile *tile)
+{
+    static const char layout[VULKAN_LEVEL_HEIGHT][VULKAN_LEVEL_WIDTH + 1] = {
+        "########",
+        "#......#",
+        "#.##...#",
+        "#......#",
+        "#..#...#",
+        "#...#..#",
+        "#......#",
+        "########"
+    };
+    bool obstacle;
+
+    if (!vulkan_tile_is_valid(row, column) || tile == NULL)
+    {
+        return false;
+    }
+    obstacle =
+        (row == 2 && column == 5) ||
+        (row == 5 && column == 5);
+    memset(tile, 0, sizeof(*tile));
+    tile->walkable = layout[row][column] == '.' && !obstacle;
+    tile->collision = !tile->walkable;
+    tile->obstacle = obstacle;
+    return true;
+}
+
+bool vulkan_is_world_position_walkable(const float world[3])
+{
+    uint32_t row;
+    uint32_t column;
+    VulkanLevelTile tile;
+
+    if (world == NULL ||
+        !vulkan_world_to_tile(world, &row, &column) ||
+        !vulkan_get_level_tile(row, column, &tile))
+    {
+        return false;
+    }
+    return tile.walkable;
+}
+
+bool vulkan_get_player_spawn(float spawn[3])
+{
+    VulkanLevelTile tile;
+    if (spawn == NULL)
+    {
+        return false;
+    }
+    if (!vulkan_tile_to_world(1, 1, spawn))
+    {
+        return false;
+    }
+    if (!vulkan_get_level_tile(1, 1, &tile) || !tile.walkable)
+    {
+        return false;
+    }
+    return true;
+}
+
+bool vulkan_build_level_scene(VulkanSceneObject *scene,
+                              uint32_t capacity,
+                              uint32_t *scene_count)
+{
+    uint32_t row;
+    uint32_t column;
+    uint32_t count = 0;
+
+    if (scene == NULL || scene_count == NULL)
+    {
+        return false;
+    }
+    *scene_count = 0;
+    memset(scene, 0,
+           sizeof(VulkanSceneObject) *
+           (capacity < VULKAN_LEVEL_MAX_SCENE_OBJECTS
+                ? capacity
+                : VULKAN_LEVEL_MAX_SCENE_OBJECTS));
+
+    for (row = 0; row < VULKAN_LEVEL_HEIGHT; ++row)
+    {
+        for (column = 0; column < VULKAN_LEVEL_WIDTH; ++column)
+        {
+            float world[3];
+            VulkanLevelTile tile;
+            if (count >= capacity ||
+                !vulkan_tile_to_world(row, column, world) ||
+                !vulkan_get_level_tile(row, column, &tile))
+            {
+                return false;
+            }
+            if (!vulkan_build_model_matrix(
+                    world[0], 0.0f, world[2],
+                    0.125f, 1.0f, 0.125f,
+                    scene[count].model))
+            {
+                return false;
+            }
+            scene[count].mesh_type = VULKAN_MESH_PLANE;
+            if (tile.walkable)
+            {
+                scene[count].color[0] = 0.28f;
+                scene[count].color[1] = 0.44f;
+                scene[count].color[2] = 0.32f;
+            }
+            else if (tile.obstacle)
+            {
+                scene[count].color[0] = 0.30f;
+                scene[count].color[1] = 0.34f;
+                scene[count].color[2] = 0.30f;
+            }
+            else
+            {
+                scene[count].color[0] = 0.18f;
+                scene[count].color[1] = 0.22f;
+                scene[count].color[2] = 0.20f;
+            }
+            scene[count].color[3] = 1.0f;
+            ++count;
+        }
+    }
+
+    for (row = 0; row < VULKAN_LEVEL_HEIGHT; ++row)
+    {
+        for (column = 0; column < VULKAN_LEVEL_WIDTH; ++column)
+        {
+            float world[3];
+            VulkanLevelTile tile;
+            if (!vulkan_get_level_tile(row, column, &tile) ||
+                !vulkan_tile_to_world(row, column, world))
+            {
+                return false;
+            }
+            if (tile.obstacle)
+            {
+                if (count >= capacity)
+                {
+                    return false;
+                }
+                world[1] =
+                    VULKAN_LEVEL_GROUND_HEIGHT +
+                    VULKAN_LEVEL_OBSTACLE_HEIGHT * 0.5f;
+                if (!vulkan_build_model_matrix(
+                        world[0], world[1], world[2],
+                        0.714285f,
+                        VULKAN_LEVEL_OBSTACLE_HEIGHT / 1.4f,
+                        0.714285f,
+                        scene[count].model))
+                {
+                    return false;
+                }
+                scene[count].mesh_type = VULKAN_MESH_CUBE;
+                scene[count].color[0] = 0.95f;
+                scene[count].color[1] = 0.58f;
+                scene[count].color[2] = 0.42f;
+                scene[count].color[3] = 1.0f;
+                ++count;
+            }
+            else if (!tile.walkable)
+            {
+                if (count >= capacity)
+                {
+                    return false;
+                }
+                world[1] =
+                    VULKAN_LEVEL_GROUND_HEIGHT +
+                    VULKAN_LEVEL_WALL_HEIGHT * 0.5f;
+                if (!vulkan_build_model_matrix(
+                        world[0], world[1], world[2],
+                        0.714285f,
+                        VULKAN_LEVEL_WALL_HEIGHT / 1.4f,
+                        0.714285f,
+                        scene[count].model))
+                {
+                    return false;
+                }
+                scene[count].mesh_type = VULKAN_MESH_CUBE;
+                scene[count].color[0] = 0.58f;
+                scene[count].color[1] = 0.64f;
+                scene[count].color[2] = 0.72f;
+                scene[count].color[3] = 1.0f;
+                ++count;
+            }
+        }
+    }
+
+    *scene_count = count;
+    return true;
+}
+
+bool vulkan_build_player_scene(const App *app,
+                               VulkanSceneObject *scene,
+                               uint32_t capacity,
+                               uint32_t *scene_count)
+{
+    float marker_x;
+    float marker_z;
+    uint32_t count = 0;
+
+    if (app == NULL || scene == NULL || scene_count == NULL ||
+        capacity < 5)
+    {
+        if (scene_count != NULL)
+        {
+            *scene_count = 0;
+        }
+        return false;
+    }
+
+    switch (app->player.facing)
+    {
+    case APP_FACING_NORTH:
+        marker_x = 0.0f;
+        marker_z = -0.38f;
+        break;
+    case APP_FACING_NORTHEAST:
+        marker_x = 0.27f;
+        marker_z = -0.27f;
+        break;
+    case APP_FACING_EAST:
+        marker_x = 0.38f;
+        marker_z = 0.0f;
+        break;
+    case APP_FACING_SOUTHEAST:
+        marker_x = 0.27f;
+        marker_z = 0.27f;
+        break;
+    case APP_FACING_SOUTH:
+        marker_x = 0.0f;
+        marker_z = 0.38f;
+        break;
+    case APP_FACING_SOUTHWEST:
+        marker_x = -0.27f;
+        marker_z = 0.27f;
+        break;
+    case APP_FACING_WEST:
+        marker_x = -0.38f;
+        marker_z = 0.0f;
+        break;
+    case APP_FACING_NORTHWEST:
+        marker_x = -0.27f;
+        marker_z = -0.27f;
+        break;
+    default:
+        marker_x = 0.0f;
+        marker_z = 0.38f;
+        break;
+    }
+
+    scene[count].mesh_type = VULKAN_MESH_CUBE;
+    if (!vulkan_build_model_matrix(
+            app->player.position[0],
+            VULKAN_LEVEL_GROUND_HEIGHT + 0.35f,
+            app->player.position[2],
+            0.36f, 0.70f, 0.36f,
+            scene[count].model))
+    {
+        return false;
+    }
+    scene[count].color[0] = 0.16f;
+    scene[count].color[1] = 0.48f;
+    scene[count].color[2] = 0.86f;
+    scene[count].color[3] = 1.0f;
+    ++count;
+
+    scene[count].mesh_type = VULKAN_MESH_CUBE;
+    if (!vulkan_build_model_matrix(
+            app->player.position[0],
+            VULKAN_LEVEL_GROUND_HEIGHT + 0.93f,
+            app->player.position[2],
+            0.28f, 0.28f, 0.28f,
+            scene[count].model))
+    {
+        return false;
+    }
+    scene[count].color[0] = 0.78f;
+    scene[count].color[1] = 0.56f;
+    scene[count].color[2] = 0.38f;
+    scene[count].color[3] = 1.0f;
+    ++count;
+
+    scene[count].mesh_type = VULKAN_MESH_CUBE;
+    if (!vulkan_build_model_matrix(
+            app->player.position[0] - 0.13f,
+            VULKAN_LEVEL_GROUND_HEIGHT - 0.36f,
+            app->player.position[2],
+            0.10f, 0.34f, 0.10f,
+            scene[count].model))
+    {
+        return false;
+    }
+    scene[count].color[0] = 0.10f;
+    scene[count].color[1] = 0.24f;
+    scene[count].color[2] = 0.55f;
+    scene[count].color[3] = 1.0f;
+    ++count;
+
+    scene[count].mesh_type = VULKAN_MESH_CUBE;
+    if (!vulkan_build_model_matrix(
+            app->player.position[0] + 0.13f,
+            VULKAN_LEVEL_GROUND_HEIGHT - 0.36f,
+            app->player.position[2],
+            0.10f, 0.34f, 0.10f,
+            scene[count].model))
+    {
+        return false;
+    }
+    scene[count].color[0] = 0.10f;
+    scene[count].color[1] = 0.24f;
+    scene[count].color[2] = 0.55f;
+    scene[count].color[3] = 1.0f;
+    ++count;
+
+    scene[count].mesh_type = VULKAN_MESH_CUBE;
+    if (!vulkan_build_model_matrix(
+            app->player.position[0] + marker_x,
+            VULKAN_LEVEL_GROUND_HEIGHT + 0.30f,
+            app->player.position[2] + marker_z,
+            0.10f, 0.10f, 0.10f,
+            scene[count].model))
+    {
+        return false;
+    }
+    scene[count].color[0] = 1.0f;
+    scene[count].color[1] = 0.82f;
+    scene[count].color[2] = 0.16f;
+    scene[count].color[3] = 1.0f;
+    ++count;
+
+    *scene_count = count;
     return true;
 }
 
@@ -513,8 +924,9 @@ AppResult vulkan_recreate_surface(VulkanState *state)
     return APP_RESULT_RUNTIME_FAILED;
 }
 
-AppResult vulkan_render_frame(VulkanState *state)
+AppResult vulkan_render_frame(VulkanState *state, const App *app)
 {
+    (void)app;
     (void)state;
     return APP_RESULT_RUNTIME_FAILED;
 }
@@ -2296,7 +2708,7 @@ AppResult vulkan_recreate_surface(VulkanState *state)
     return APP_RESULT_OK;
 }
 
-AppResult vulkan_render_frame(VulkanState *state)
+AppResult vulkan_render_frame(VulkanState *state, const App *app)
 {
     VkSemaphore wait_semaphores[1];
     VkPipelineStageFlags wait_stages[1];
@@ -2311,8 +2723,12 @@ AppResult vulkan_render_frame(VulkanState *state)
     VulkanFixedCamera camera;
     float view_projection[16];
     VkDeviceSize vertex_offset;
-    VulkanSceneObject scene[5];
+    VulkanSceneObject scene[VULKAN_LEVEL_MAX_SCENE_OBJECTS];
+    VulkanSceneObject player_scene[5];
     uint32_t scene_index;
+    uint32_t scene_count = 0;
+    uint32_t player_scene_count = 0;
+    uint32_t player_scene_index;
     uint32_t image_index = 0;
     VkResult result;
 
@@ -2430,52 +2846,27 @@ AppResult vulkan_render_frame(VulkanState *state)
         state->pipeline_layout,
         0, 1, &state->descriptor_sets[state->current_frame],
         0, NULL);
-    memset(scene, 0, sizeof(scene));
-    vulkan_build_model_matrix(0.0f, 0.0f, 0.0f,
-                              1.0f, 1.0f, 1.0f,
-                              scene[0].model);
-    scene[0].mesh_type = VULKAN_MESH_PLANE;
-    scene[0].color[0] = 0.32f;
-    scene[0].color[1] = 0.48f;
-    scene[0].color[2] = 0.36f;
-    scene[0].color[3] = 1.0f;
-    vulkan_build_model_matrix(-2.0f, 0.0f, 0.0f,
-                              0.75f, 0.75f, 0.75f,
-                              scene[1].model);
-    scene[1].mesh_type = VULKAN_MESH_CUBE;
-    scene[1].color[0] = 0.55f;
-    scene[1].color[1] = 0.72f;
-    scene[1].color[2] = 0.95f;
-    scene[1].color[3] = 1.0f;
-    vulkan_build_model_matrix(0.0f, 0.5f, -1.5f,
-                              0.55f, 1.2f, 0.55f,
-                              scene[2].model);
-    scene[2].mesh_type = VULKAN_MESH_CUBE;
-    scene[2].color[0] = 0.95f;
-    scene[2].color[1] = 0.58f;
-    scene[2].color[2] = 0.42f;
-    scene[2].color[3] = 1.0f;
-    vulkan_build_model_matrix(2.0f, 0.0f, 0.5f,
-                              0.85f, 0.85f, 0.85f,
-                              scene[3].model);
-    scene[3].mesh_type = VULKAN_MESH_CUBE;
-    scene[3].color[0] = 0.72f;
-    scene[3].color[1] = 0.48f;
-    scene[3].color[2] = 0.88f;
-    scene[3].color[3] = 1.0f;
-    vulkan_build_model_matrix(0.5f, -0.1f, 2.0f,
-                              1.1f, 0.35f, 0.65f,
-                              scene[4].model);
-    scene[4].mesh_type = VULKAN_MESH_CUBE;
-    scene[4].color[0] = 0.95f;
-    scene[4].color[1] = 0.82f;
-    scene[4].color[2] = 0.36f;
-    scene[4].color[3] = 1.0f;
+    if (!vulkan_build_level_scene(
+            scene, VULKAN_LEVEL_MAX_SCENE_OBJECTS, &scene_count))
+    {
+        return APP_RESULT_RUNTIME_FAILED;
+    }
+    if (app != NULL &&
+        vulkan_build_player_scene(
+            app, player_scene, 5, &player_scene_count))
+    {
+        for (player_scene_index = 0;
+             player_scene_index < player_scene_count &&
+             scene_count < VULKAN_LEVEL_MAX_SCENE_OBJECTS;
+             ++player_scene_index)
+        {
+            scene[scene_count] = player_scene[player_scene_index];
+            ++scene_count;
+        }
+    }
 
     vertex_offset = 0;
-    for (scene_index = 0;
-         scene_index < vulkan_scene_object_count();
-         ++scene_index)
+    for (scene_index = 0; scene_index < scene_count; ++scene_index)
     {
         memcpy(push_constants.model, scene[scene_index].model,
                sizeof(push_constants.model));

@@ -35,6 +35,18 @@ int main(void)
     float camera_position[3];
     float fixed_view[16];
     float fixed_view_projection[16];
+    uint32_t level_width;
+    uint32_t level_height;
+    uint32_t row;
+    uint32_t column;
+    VulkanLevelTile level_tile;
+    float level_world[3];
+    float player_spawn[3];
+    VulkanSceneObject level_scene[VULKAN_LEVEL_MAX_SCENE_OBJECTS];
+    uint32_t level_scene_count;
+    VulkanSceneObject player_scene[5];
+    uint32_t player_scene_count;
+    App app;
 
     queue_families[0].queueFlags = VK_QUEUE_COMPUTE_BIT;
     queue_families[0].queueCount = 1;
@@ -99,8 +111,8 @@ int main(void)
             vulkan_plane_index_count() == 6,
         "procedural plane uses 4 vertices and 6 indices");
     failures |= expect_true(
-        vulkan_scene_object_count() == 5,
-        "procedural scene contains the expected reusable mesh objects");
+        vulkan_scene_object_count() == 98,
+        "level scene contains 64 ground tiles and 34 wall or obstacle cubes");
     failures |= expect_true(
         vulkan_build_model_matrix(2.0f, -1.0f, 3.0f,
                                   2.0f, 3.0f, 4.0f, model) &&
@@ -120,9 +132,9 @@ int main(void)
         "perspective projection produces finite 45-degree camera parameters");
     failures |= expect_true(
         vulkan_get_fixed_camera(&camera) &&
-            camera.eye[0] == 6.0f &&
-            camera.eye[1] == 6.0f &&
-            camera.eye[2] == 6.0f &&
+            camera.eye[0] == 7.5f &&
+            camera.eye[1] == 7.5f &&
+            camera.eye[2] == 7.5f &&
             camera.target[0] == 0.0f &&
             camera.target[1] == 0.0f &&
             camera.target[2] == 0.0f &&
@@ -167,6 +179,63 @@ int main(void)
             isfinite(fixed_view_projection[10]) &&
             isfinite(fixed_view_projection[14]),
         "fixed view projection remains finite across supported aspect ratios");
+    failures |= expect_true(
+        vulkan_get_level_dimensions(&level_width, &level_height) &&
+            level_width == 8 &&
+            level_height == 8,
+        "level dimensions are one documented 8 by 8 tile grid");
+    failures |= expect_true(
+        vulkan_get_player_spawn(player_spawn) &&
+            vulkan_is_world_position_walkable(player_spawn) &&
+            player_spawn[0] == -2.5f &&
+            player_spawn[1] == VULKAN_LEVEL_GROUND_HEIGHT &&
+            player_spawn[2] == -2.5f,
+        "documented player spawn lies on a walkable tile");
+    failures |= expect_true(
+        vulkan_build_level_scene(level_scene,
+                                 VULKAN_LEVEL_MAX_SCENE_OBJECTS,
+                                 &level_scene_count) &&
+            level_scene_count == 98,
+        "level scene helper builds ground, walls, and decorative obstacles");
+
+    failures |= expect_true(app_init(&app) == APP_RESULT_OK,
+                            "player scene test initializes application state");
+    failures |= expect_true(vulkan_get_player_spawn(player_spawn),
+                            "player scene test obtains the fixed spawn");
+    app_set_player_spawn(&app, player_spawn);
+    failures |= expect_true(
+        vulkan_build_player_scene(&app, player_scene, 5,
+                                  &player_scene_count) &&
+            player_scene_count == 5 &&
+            player_scene[0].mesh_type == VULKAN_MESH_CUBE &&
+            player_scene[1].mesh_type == VULKAN_MESH_CUBE &&
+            player_scene[4].color[0] == 1.0f,
+        "procedural player scene builds distinct humanoid meshes and facing marker");
+
+    for (row = 0; row < 8; ++row)
+    {
+        for (column = 0; column < 8; ++column)
+        {
+            failures |= expect_true(
+                vulkan_get_level_tile(row, column, &level_tile) &&
+                    vulkan_tile_to_world(row, column, level_world) &&
+                    vulkan_is_world_position_walkable(level_world) ==
+                        level_tile.walkable,
+                "every tile has consistent level coordinates and walkability");
+        }
+    }
+    failures |= expect_true(
+        vulkan_get_level_tile(0, 0, &level_tile) &&
+            level_tile.collision &&
+            !level_tile.walkable &&
+            vulkan_get_level_tile(1, 1, &level_tile) &&
+            level_tile.walkable &&
+            !level_tile.collision &&
+            vulkan_get_level_tile(2, 5, &level_tile) &&
+            level_tile.obstacle &&
+            level_tile.collision &&
+            !level_tile.walkable,
+        "boundaries, open spawn area, and obstacle collision states are consistent");
 
     if (failures != 0)
     {

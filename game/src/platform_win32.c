@@ -52,7 +52,39 @@ static LRESULT CALLBACK platform_window_proc(HWND window,
         PostQuitMessage(0);
         return 0;
     case WM_KEYDOWN:
-        if (w_param == 'P')
+        if (w_param == 'A')
+        {
+            app_set_key(platform_app_state, APP_KEY_MOVE_LEFT, true);
+        }
+        else if (w_param == 'D')
+        {
+            app_set_key(platform_app_state, APP_KEY_MOVE_RIGHT, true);
+        }
+        else if (w_param == 'W')
+        {
+            app_set_key(platform_app_state, APP_KEY_MOVE_UP, true);
+        }
+        else if (w_param == 'S')
+        {
+            app_set_key(platform_app_state, APP_KEY_MOVE_DOWN, true);
+        }
+        else if (w_param == VK_LEFT)
+        {
+            app_set_key(platform_app_state, APP_KEY_MOVE_LEFT, true);
+        }
+        else if (w_param == VK_RIGHT)
+        {
+            app_set_key(platform_app_state, APP_KEY_MOVE_RIGHT, true);
+        }
+        else if (w_param == VK_UP)
+        {
+            app_set_key(platform_app_state, APP_KEY_MOVE_UP, true);
+        }
+        else if (w_param == VK_DOWN)
+        {
+            app_set_key(platform_app_state, APP_KEY_MOVE_DOWN, true);
+        }
+        else if (w_param == 'P')
         {
             app_handle_event(platform_app_state, APP_EVENT_TOGGLE_PAUSE);
         }
@@ -63,6 +95,24 @@ static LRESULT CALLBACK platform_window_proc(HWND window,
         else if (w_param == VK_ESCAPE)
         {
             app_handle_event(platform_app_state, APP_EVENT_CLOSE);
+        }
+        return 0;
+    case WM_KEYUP:
+        if (w_param == 'A' || w_param == VK_LEFT)
+        {
+            app_set_key(platform_app_state, APP_KEY_MOVE_LEFT, false);
+        }
+        else if (w_param == 'D' || w_param == VK_RIGHT)
+        {
+            app_set_key(platform_app_state, APP_KEY_MOVE_RIGHT, false);
+        }
+        else if (w_param == 'W' || w_param == VK_UP)
+        {
+            app_set_key(platform_app_state, APP_KEY_MOVE_UP, false);
+        }
+        else if (w_param == 'S' || w_param == VK_DOWN)
+        {
+            app_set_key(platform_app_state, APP_KEY_MOVE_DOWN, false);
         }
         return 0;
     case WM_PAINT:
@@ -170,6 +220,21 @@ AppResult app_run_platform(App *app)
         return vulkan_result;
     }
     app->vulkan_state = vulkan_state;
+    float player_spawn[3];
+    if (vulkan_get_player_spawn(player_spawn))
+    {
+        app_set_player_spawn(app, player_spawn);
+        app_set_level_walkable(app, vulkan_is_world_position_walkable);
+    }
+    else
+    {
+        vulkan_shutdown(vulkan_state);
+        app->vulkan_state = NULL;
+        platform_destroy_window(window);
+        UnregisterClassW(L"VulkanIsometricRpgStep3", instance);
+        platform_app_state = NULL;
+        return APP_RESULT_INITIALIZATION_FAILED;
+    }
 
     AppResult result = APP_RESULT_OK;
     while (app->running)
@@ -204,7 +269,7 @@ AppResult app_run_platform(App *app)
         VulkanState *active_vulkan =
             (VulkanState *)app->vulkan_state;
         if (active_vulkan != NULL &&
-            vulkan_render_frame(active_vulkan) != APP_RESULT_OK)
+            vulkan_render_frame(active_vulkan, app) != APP_RESULT_OK)
         {
             result = APP_RESULT_RUNTIME_FAILED;
             app_handle_event(app, APP_EVENT_CLOSE);

@@ -77,6 +77,7 @@ add_test(NAME game_foundation COMMAND game_foundation_test)
 add_executable(game_vulkan_test
     tests/vulkan_test.c
     src/vulkan.c
+    src/app.c
 )
 
 target_link_libraries(game_vulkan_test PRIVATE Vulkan::Vulkan)

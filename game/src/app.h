@@ -25,6 +25,45 @@ typedef enum AppEvent
     APP_EVENT_CLOSE
 } AppEvent;
 
+typedef enum AppKey
+{
+    APP_KEY_MOVE_LEFT = 0,
+    APP_KEY_MOVE_RIGHT,
+    APP_KEY_MOVE_UP,
+    APP_KEY_MOVE_DOWN,
+    APP_KEY_COUNT
+} AppKey;
+
+typedef enum AppPlayerState
+{
+    APP_PLAYER_IDLE = 0,
+    APP_PLAYER_MOVING
+} AppPlayerState;
+
+typedef enum AppFacingDirection
+{
+    APP_FACING_NORTH = 0,
+    APP_FACING_NORTHEAST,
+    APP_FACING_EAST,
+    APP_FACING_SOUTHEAST,
+    APP_FACING_SOUTH,
+    APP_FACING_SOUTHWEST,
+    APP_FACING_WEST,
+    APP_FACING_NORTHWEST
+} AppFacingDirection;
+
+typedef bool (*AppWalkablePredicate)(const float world[3]);
+
+typedef struct AppPlayer
+{
+    float position[3];
+    float spawn[3];
+    float movement_speed;
+    float collision_radius;
+    AppPlayerState state;
+    AppFacingDirection facing;
+} AppPlayer;
+
 typedef struct App
 {
     void *vulkan_state;
@@ -37,6 +76,9 @@ typedef struct App
     double previous_time_seconds;
     unsigned long long frame_index;
     unsigned long long fixed_update_count;
+    bool held_keys[APP_KEY_COUNT];
+    AppWalkablePredicate level_walkable;
+    AppPlayer player;
 } App;
 
 AppResult app_init(App *app);
@@ -47,5 +89,15 @@ void app_restart(App *app);
 bool app_is_paused(const App *app);
 bool app_step(App *app, double current_time_seconds);
 const char *app_result_text(AppResult result);
+void app_set_key(App *app, AppKey key, bool held);
+void app_set_player_spawn(App *app, const float spawn[3]);
+void app_set_level_walkable(App *app, AppWalkablePredicate predicate);
+void app_move_player_fixed(App *app, double fixed_step_seconds);
+bool app_resolve_player_collision(const float current_position[3],
+                                  float candidate_position[3],
+                                  float collision_radius,
+                                  AppWalkablePredicate predicate);
+AppFacingDirection app_facing_from_world_direction(float x,
+                                                   float z);
 
 #endif

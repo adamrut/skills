@@ -47,9 +47,23 @@ typedef struct VulkanLevelBounds {
     float max[3];
 } VulkanLevelBounds;
 
+#define VULKAN_LEVEL_WIDTH 8
+#define VULKAN_LEVEL_HEIGHT 8
+#define VULKAN_LEVEL_TILE_SIZE 1.0f
+#define VULKAN_LEVEL_GROUND_HEIGHT -0.7f
+#define VULKAN_LEVEL_WALL_HEIGHT 1.2f
+#define VULKAN_LEVEL_OBSTACLE_HEIGHT 0.8f
+#define VULKAN_LEVEL_MAX_SCENE_OBJECTS 128
+
+typedef struct VulkanLevelTile {
+    bool walkable;
+    bool collision;
+    bool obstacle;
+} VulkanLevelTile;
+
 AppResult vulkan_init(VulkanState **state, void *native_window);
 AppResult vulkan_recreate_surface(VulkanState *state);
-AppResult vulkan_render_frame(VulkanState *state);
+AppResult vulkan_render_frame(VulkanState *state, const App *app);
 void vulkan_shutdown(VulkanState *state);
 
 bool vulkan_choose_surface_format(const VkSurfaceFormatKHR *formats,
@@ -90,5 +104,26 @@ bool vulkan_build_fixed_view(const VulkanFixedCamera *camera, float *matrix);
 bool vulkan_build_fixed_view_projection(float aspect,
                                         const VulkanFixedCamera *camera,
                                         float *view_projection);
+bool vulkan_get_level_dimensions(uint32_t *width,
+                                 uint32_t *height);
+bool vulkan_tile_is_valid(uint32_t row, uint32_t column);
+bool vulkan_tile_to_world(uint32_t row,
+                          uint32_t column,
+                          float world[3]);
+bool vulkan_world_to_tile(const float world[3],
+                          uint32_t *row,
+                          uint32_t *column);
+bool vulkan_get_level_tile(uint32_t row,
+                           uint32_t column,
+                           VulkanLevelTile *tile);
+bool vulkan_is_world_position_walkable(const float world[3]);
+bool vulkan_get_player_spawn(float spawn[3]);
+bool vulkan_build_level_scene(VulkanSceneObject *scene,
+                              uint32_t capacity,
+                              uint32_t *scene_count);
+bool vulkan_build_player_scene(const App *app,
+                               VulkanSceneObject *scene,
+                               uint32_t capacity,
+                               uint32_t *scene_count);
 
 #endif
