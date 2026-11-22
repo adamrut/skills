@@ -27,6 +27,7 @@ int main(void)
     VkFormat selected_depth;
     uint32_t in_flight;
     float perspective[16];
+    float model[16];
 
     queue_families[0].queueFlags = VK_QUEUE_COMPUTE_BIT;
     queue_families[0].queueCount = 1;
@@ -83,8 +84,27 @@ int main(void)
         vulkan_choose_in_flight_limit(1, 2) == 1,
         "in-flight limit cannot exceed one-image swap chains");
     failures |= expect_true(
-        vulkan_cube_vertex_count() == 36,
-        "procedural cube uses one self-contained 36-vertex draw");
+        vulkan_cube_vertex_count() == 24 &&
+            vulkan_cube_index_count() == 36,
+        "procedural cube uses 24 vertices and 36 indices");
+    failures |= expect_true(
+        vulkan_plane_vertex_count() == 4 &&
+            vulkan_plane_index_count() == 6,
+        "procedural plane uses 4 vertices and 6 indices");
+    failures |= expect_true(
+        vulkan_scene_object_count() == 5,
+        "procedural scene contains the expected reusable mesh objects");
+    failures |= expect_true(
+        vulkan_build_model_matrix(2.0f, -1.0f, 3.0f,
+                                  2.0f, 3.0f, 4.0f, model) &&
+            model[0] == 2.0f &&
+            model[5] == 3.0f &&
+            model[10] == 4.0f &&
+            model[12] == 2.0f &&
+            model[13] == -1.0f &&
+            model[14] == 3.0f &&
+            model[15] == 1.0f,
+        "model transform applies scale and translation in one matrix");
     failures |= expect_true(
         vulkan_build_perspective(16.0f / 9.0f, perspective) &&
             perspective[0] != 0.0f &&

@@ -54,8 +54,14 @@ struct VulkanState
     void **uniform_mappings;
     VkPipelineLayout pipeline_layout;
     VkPipeline graphics_pipeline;
-    VkBuffer vertex_buffer;
-    VkDeviceMemory vertex_memory;
+    VkBuffer cube_vertex_buffer;
+    VkDeviceMemory cube_vertex_memory;
+    VkBuffer cube_index_buffer;
+    VkDeviceMemory cube_index_memory;
+    VkBuffer plane_vertex_buffer;
+    VkDeviceMemory plane_vertex_memory;
+    VkBuffer plane_index_buffer;
+    VkDeviceMemory plane_index_memory;
     void *native_window;
 };
 
@@ -220,7 +226,51 @@ uint32_t vulkan_choose_in_flight_limit(uint32_t swapchain_image_count,
 
 uint32_t vulkan_cube_vertex_count(void)
 {
+    return 24;
+}
+
+uint32_t vulkan_cube_index_count(void)
+{
     return 36;
+}
+
+uint32_t vulkan_plane_vertex_count(void)
+{
+    return 4;
+}
+
+uint32_t vulkan_plane_index_count(void)
+{
+    return 6;
+}
+
+uint32_t vulkan_scene_object_count(void)
+{
+    return 5;
+}
+
+bool vulkan_build_model_matrix(float translation_x,
+                               float translation_y,
+                               float translation_z,
+                               float scale_x,
+                               float scale_y,
+                               float scale_z,
+                               float *matrix)
+{
+    if (matrix == NULL || scale_x == 0.0f ||
+        scale_y == 0.0f || scale_z == 0.0f)
+    {
+        return false;
+    }
+    memset(matrix, 0, sizeof(float) * 16);
+    matrix[0] = scale_x;
+    matrix[5] = scale_y;
+    matrix[10] = scale_z;
+    matrix[12] = translation_x;
+    matrix[13] = translation_y;
+    matrix[14] = translation_z;
+    matrix[15] = 1.0f;
+    return true;
 }
 
 bool vulkan_build_perspective(float aspect, float *matrix)
@@ -709,6 +759,31 @@ static AppResult create_buffer(VulkanState *state,
     return APP_RESULT_OK;
 }
 
+static AppResult upload_host_visible_buffer(VulkanState *state,
+                                            VkDeviceSize size,
+                                            VkBufferUsageFlags usage,
+                                            const void *data,
+                                            VkBuffer *buffer,
+                                            VkDeviceMemory *memory)
+{
+    void *mapped;
+    if (create_buffer(state,
+                      size,
+                      usage,
+                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                      buffer,
+                      memory) != APP_RESULT_OK ||
+        vkMapMemory(state->device, *memory, 0, size, 0, &mapped) !=
+            VK_SUCCESS)
+    {
+        return APP_RESULT_INITIALIZATION_FAILED;
+    }
+    memcpy(mapped, data, (size_t)size);
+    vkUnmapMemory(state->device, *memory);
+    return APP_RESULT_OK;
+}
+
 static void add_cube_vertex(VulkanVertex *vertices,
                             uint32_t *index,
                             float px, float py, float pz,
@@ -729,39 +804,67 @@ static void fill_cube_vertices(VulkanVertex *vertices)
     add_cube_vertex(vertices, &i, -0.7f, -0.7f,  0.7f, 0,0,1);
     add_cube_vertex(vertices, &i,  0.7f, -0.7f,  0.7f, 0,0,1);
     add_cube_vertex(vertices, &i,  0.7f,  0.7f,  0.7f, 0,0,1);
-    add_cube_vertex(vertices, &i, -0.7f, -0.7f,  0.7f, 0,0,1);
-    add_cube_vertex(vertices, &i,  0.7f,  0.7f,  0.7f, 0,0,1);
     add_cube_vertex(vertices, &i, -0.7f,  0.7f,  0.7f, 0,0,1);
     add_cube_vertex(vertices, &i,  0.7f, -0.7f, -0.7f, 0,0,-1);
     add_cube_vertex(vertices, &i, -0.7f, -0.7f, -0.7f, 0,0,-1);
-    add_cube_vertex(vertices, &i, -0.7f,  0.7f, -0.7f, 0,0,-1);
-    add_cube_vertex(vertices, &i,  0.7f, -0.7f, -0.7f, 0,0,-1);
     add_cube_vertex(vertices, &i, -0.7f,  0.7f, -0.7f, 0,0,-1);
     add_cube_vertex(vertices, &i,  0.7f,  0.7f, -0.7f, 0,0,-1);
     add_cube_vertex(vertices, &i, -0.7f, -0.7f, -0.7f, -1,0,0);
     add_cube_vertex(vertices, &i, -0.7f, -0.7f,  0.7f, -1,0,0);
     add_cube_vertex(vertices, &i, -0.7f,  0.7f,  0.7f, -1,0,0);
-    add_cube_vertex(vertices, &i, -0.7f, -0.7f, -0.7f, -1,0,0);
-    add_cube_vertex(vertices, &i, -0.7f,  0.7f,  0.7f, -1,0,0);
     add_cube_vertex(vertices, &i, -0.7f,  0.7f, -0.7f, -1,0,0);
     add_cube_vertex(vertices, &i,  0.7f, -0.7f,  0.7f, 1,0,0);
     add_cube_vertex(vertices, &i,  0.7f, -0.7f, -0.7f, 1,0,0);
-    add_cube_vertex(vertices, &i,  0.7f,  0.7f, -0.7f, 1,0,0);
-    add_cube_vertex(vertices, &i,  0.7f, -0.7f,  0.7f, 1,0,0);
     add_cube_vertex(vertices, &i,  0.7f,  0.7f, -0.7f, 1,0,0);
     add_cube_vertex(vertices, &i,  0.7f,  0.7f,  0.7f, 1,0,0);
     add_cube_vertex(vertices, &i, -0.7f,  0.7f,  0.7f, 0,1,0);
     add_cube_vertex(vertices, &i,  0.7f,  0.7f,  0.7f, 0,1,0);
     add_cube_vertex(vertices, &i,  0.7f,  0.7f, -0.7f, 0,1,0);
-    add_cube_vertex(vertices, &i, -0.7f,  0.7f,  0.7f, 0,1,0);
-    add_cube_vertex(vertices, &i,  0.7f,  0.7f, -0.7f, 0,1,0);
     add_cube_vertex(vertices, &i, -0.7f,  0.7f, -0.7f, 0,1,0);
     add_cube_vertex(vertices, &i, -0.7f, -0.7f, -0.7f, 0,-1,0);
     add_cube_vertex(vertices, &i,  0.7f, -0.7f, -0.7f, 0,-1,0);
     add_cube_vertex(vertices, &i,  0.7f, -0.7f,  0.7f, 0,-1,0);
-    add_cube_vertex(vertices, &i, -0.7f, -0.7f, -0.7f, 0,-1,0);
-    add_cube_vertex(vertices, &i,  0.7f, -0.7f,  0.7f, 0,-1,0);
     add_cube_vertex(vertices, &i, -0.7f, -0.7f,  0.7f, 0,-1,0);
+}
+
+static void fill_cube_indices(uint16_t *indices)
+{
+    const uint16_t values[36] = {
+        0,1,2, 0,2,3,
+        4,5,6, 4,6,7,
+        8,9,10, 8,10,11,
+        12,13,14, 12,14,15,
+        16,17,18, 16,18,19,
+        20,21,22, 20,22,23
+    };
+    memcpy(indices, values, sizeof(values));
+}
+
+static void fill_plane_vertices(VulkanVertex *vertices)
+{
+    memset(vertices, 0, sizeof(VulkanVertex) * 4);
+    vertices[0].position[0] = -4.0f;
+    vertices[0].position[1] = -0.7f;
+    vertices[0].position[2] = -4.0f;
+    vertices[1].position[0] = 4.0f;
+    vertices[1].position[1] = -0.7f;
+    vertices[1].position[2] = -4.0f;
+    vertices[2].position[0] = 4.0f;
+    vertices[2].position[1] = -0.7f;
+    vertices[2].position[2] = 4.0f;
+    vertices[3].position[0] = -4.0f;
+    vertices[3].position[1] = -0.7f;
+    vertices[3].position[2] = 4.0f;
+    vertices[0].normal[1] = 1.0f;
+    vertices[1].normal[1] = 1.0f;
+    vertices[2].normal[1] = 1.0f;
+    vertices[3].normal[1] = 1.0f;
+}
+
+static void fill_plane_indices(uint16_t *indices)
+{
+    const uint16_t values[6] = {0,1,2, 0,2,3};
+    memcpy(indices, values, sizeof(values));
 }
 
 static void build_look_at(float eye_x, float eye_y, float eye_z,
@@ -806,15 +909,6 @@ static void multiply_mat4(const float *a, const float *b, float *out)
                 a[row + 12] * b[column * 4 + 3];
         }
     }
-}
-
-static void build_model_matrix(float *matrix)
-{
-    memset(matrix, 0, sizeof(float) * 16);
-    matrix[0] = 1.0f;
-    matrix[5] = 1.0f;
-    matrix[10] = 1.0f;
-    matrix[15] = 1.0f;
 }
 
 static AppResult create_shader_module(VulkanState *state,
@@ -937,15 +1031,45 @@ static void cleanup_swapchain_resources(VulkanState *state)
         state->uniform_memories = NULL;
         state->uniform_buffers = NULL;
     }
-    if (state->vertex_buffer != VK_NULL_HANDLE)
+    if (state->cube_index_buffer != VK_NULL_HANDLE)
     {
-        vkDestroyBuffer(state->device, state->vertex_buffer, NULL);
-        state->vertex_buffer = VK_NULL_HANDLE;
+        vkDestroyBuffer(state->device, state->cube_index_buffer, NULL);
+        state->cube_index_buffer = VK_NULL_HANDLE;
     }
-    if (state->vertex_memory != VK_NULL_HANDLE)
+    if (state->cube_index_memory != VK_NULL_HANDLE)
     {
-        vkFreeMemory(state->device, state->vertex_memory, NULL);
-        state->vertex_memory = VK_NULL_HANDLE;
+        vkFreeMemory(state->device, state->cube_index_memory, NULL);
+        state->cube_index_memory = VK_NULL_HANDLE;
+    }
+    if (state->cube_vertex_buffer != VK_NULL_HANDLE)
+    {
+        vkDestroyBuffer(state->device, state->cube_vertex_buffer, NULL);
+        state->cube_vertex_buffer = VK_NULL_HANDLE;
+    }
+    if (state->cube_vertex_memory != VK_NULL_HANDLE)
+    {
+        vkFreeMemory(state->device, state->cube_vertex_memory, NULL);
+        state->cube_vertex_memory = VK_NULL_HANDLE;
+    }
+    if (state->plane_index_buffer != VK_NULL_HANDLE)
+    {
+        vkDestroyBuffer(state->device, state->plane_index_buffer, NULL);
+        state->plane_index_buffer = VK_NULL_HANDLE;
+    }
+    if (state->plane_index_memory != VK_NULL_HANDLE)
+    {
+        vkFreeMemory(state->device, state->plane_index_memory, NULL);
+        state->plane_index_memory = VK_NULL_HANDLE;
+    }
+    if (state->plane_vertex_buffer != VK_NULL_HANDLE)
+    {
+        vkDestroyBuffer(state->device, state->plane_vertex_buffer, NULL);
+        state->plane_vertex_buffer = VK_NULL_HANDLE;
+    }
+    if (state->plane_vertex_memory != VK_NULL_HANDLE)
+    {
+        vkFreeMemory(state->device, state->plane_vertex_memory, NULL);
+        state->plane_vertex_memory = VK_NULL_HANDLE;
     }
     free(state->descriptor_sets);
     state->descriptor_sets = NULL;
@@ -1247,8 +1371,10 @@ static AppResult create_pipeline_resources(VulkanState *state)
     VkGraphicsPipelineCreateInfo pipeline_info;
     VkDescriptorBufferInfo descriptor_buffer_info;
     VkWriteDescriptorSet descriptor_write;
-    VulkanVertex cube_vertices[36];
-    void *mapped;
+    VulkanVertex cube_vertices[24];
+    uint16_t cube_indices[36];
+    VulkanVertex plane_vertices[4];
+    uint16_t plane_indices[6];
     uint32_t i;
     VkResult result;
 
@@ -1261,20 +1387,32 @@ static AppResult create_pipeline_resources(VulkanState *state)
     }
 
     fill_cube_vertices(cube_vertices);
-    if (create_buffer(state,
-                      sizeof(cube_vertices),
-                      VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                      &state->vertex_buffer,
-                      &state->vertex_memory) != APP_RESULT_OK ||
-        vkMapMemory(state->device, state->vertex_memory, 0,
-                    sizeof(cube_vertices), 0, &mapped) != VK_SUCCESS)
+    fill_cube_indices(cube_indices);
+    fill_plane_vertices(plane_vertices);
+    fill_plane_indices(plane_indices);
+    if (upload_host_visible_buffer(
+            state, sizeof(cube_vertices),
+            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+            cube_vertices, &state->cube_vertex_buffer,
+            &state->cube_vertex_memory) != APP_RESULT_OK ||
+        upload_host_visible_buffer(
+            state, sizeof(cube_indices),
+            VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+            cube_indices, &state->cube_index_buffer,
+            &state->cube_index_memory) != APP_RESULT_OK ||
+        upload_host_visible_buffer(
+            state, sizeof(plane_vertices),
+            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+            plane_vertices, &state->plane_vertex_buffer,
+            &state->plane_vertex_memory) != APP_RESULT_OK ||
+        upload_host_visible_buffer(
+            state, sizeof(plane_indices),
+            VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+            plane_indices, &state->plane_index_buffer,
+            &state->plane_index_memory) != APP_RESULT_OK)
     {
         return APP_RESULT_INITIALIZATION_FAILED;
     }
-    memcpy(mapped, cube_vertices, sizeof(cube_vertices));
-    vkUnmapMemory(state->device, state->vertex_memory);
 
     memset(&descriptor_binding, 0, sizeof(descriptor_binding));
     descriptor_binding.binding = 0;
@@ -1998,6 +2136,8 @@ AppResult vulkan_render_frame(VulkanState *state)
     float view[16];
     float view_projection[16];
     VkDeviceSize vertex_offset;
+    VulkanSceneObject scene[5];
+    uint32_t scene_index;
     uint32_t image_index = 0;
     VkResult result;
 
@@ -2112,22 +2252,89 @@ AppResult vulkan_render_frame(VulkanState *state)
         state->pipeline_layout,
         0, 1, &state->descriptor_sets[state->current_frame],
         0, NULL);
-    build_model_matrix(push_constants.model);
-    push_constants.color[0] = 0.55f;
-    push_constants.color[1] = 0.72f;
-    push_constants.color[2] = 0.95f;
-    push_constants.color[3] = 1.0f;
-    vkCmdPushConstants(
-        state->command_buffers[state->current_frame],
-        state->pipeline_layout,
-        VK_SHADER_STAGE_VERTEX_BIT,
-        0, sizeof(push_constants), &push_constants);
+    memset(scene, 0, sizeof(scene));
+    vulkan_build_model_matrix(0.0f, 0.0f, 0.0f,
+                              1.0f, 1.0f, 1.0f,
+                              scene[0].model);
+    scene[0].mesh_type = VULKAN_MESH_PLANE;
+    scene[0].color[0] = 0.32f;
+    scene[0].color[1] = 0.48f;
+    scene[0].color[2] = 0.36f;
+    scene[0].color[3] = 1.0f;
+    vulkan_build_model_matrix(-2.0f, 0.0f, 0.0f,
+                              0.75f, 0.75f, 0.75f,
+                              scene[1].model);
+    scene[1].mesh_type = VULKAN_MESH_CUBE;
+    scene[1].color[0] = 0.55f;
+    scene[1].color[1] = 0.72f;
+    scene[1].color[2] = 0.95f;
+    scene[1].color[3] = 1.0f;
+    vulkan_build_model_matrix(0.0f, 0.5f, -1.5f,
+                              0.55f, 1.2f, 0.55f,
+                              scene[2].model);
+    scene[2].mesh_type = VULKAN_MESH_CUBE;
+    scene[2].color[0] = 0.95f;
+    scene[2].color[1] = 0.58f;
+    scene[2].color[2] = 0.42f;
+    scene[2].color[3] = 1.0f;
+    vulkan_build_model_matrix(2.0f, 0.0f, 0.5f,
+                              0.85f, 0.85f, 0.85f,
+                              scene[3].model);
+    scene[3].mesh_type = VULKAN_MESH_CUBE;
+    scene[3].color[0] = 0.72f;
+    scene[3].color[1] = 0.48f;
+    scene[3].color[2] = 0.88f;
+    scene[3].color[3] = 1.0f;
+    vulkan_build_model_matrix(0.5f, -0.1f, 2.0f,
+                              1.1f, 0.35f, 0.65f,
+                              scene[4].model);
+    scene[4].mesh_type = VULKAN_MESH_CUBE;
+    scene[4].color[0] = 0.95f;
+    scene[4].color[1] = 0.82f;
+    scene[4].color[2] = 0.36f;
+    scene[4].color[3] = 1.0f;
+
     vertex_offset = 0;
-    vkCmdBindVertexBuffers(
-        state->command_buffers[state->current_frame],
-        0, 1, &state->vertex_buffer, &vertex_offset);
-    vkCmdDraw(state->command_buffers[state->current_frame],
-              vulkan_cube_vertex_count(), 1, 0, 0);
+    for (scene_index = 0;
+         scene_index < vulkan_scene_object_count();
+         ++scene_index)
+    {
+        memcpy(push_constants.model, scene[scene_index].model,
+               sizeof(push_constants.model));
+        memcpy(push_constants.color, scene[scene_index].color,
+               sizeof(push_constants.color));
+        vkCmdPushConstants(
+            state->command_buffers[state->current_frame],
+            state->pipeline_layout,
+            VK_SHADER_STAGE_VERTEX_BIT,
+            0, sizeof(push_constants), &push_constants);
+        if (scene[scene_index].mesh_type == VULKAN_MESH_PLANE)
+        {
+            vkCmdBindVertexBuffers(
+                state->command_buffers[state->current_frame],
+                0, 1, &state->plane_vertex_buffer, &vertex_offset);
+            vkCmdBindIndexBuffer(
+                state->command_buffers[state->current_frame],
+                state->plane_index_buffer, 0,
+                VK_INDEX_TYPE_UINT16);
+            vkCmdDrawIndexed(
+                state->command_buffers[state->current_frame],
+                vulkan_plane_index_count(), 1, 0, 0, 0);
+        }
+        else
+        {
+            vkCmdBindVertexBuffers(
+                state->command_buffers[state->current_frame],
+                0, 1, &state->cube_vertex_buffer, &vertex_offset);
+            vkCmdBindIndexBuffer(
+                state->command_buffers[state->current_frame],
+                state->cube_index_buffer, 0,
+                VK_INDEX_TYPE_UINT16);
+            vkCmdDrawIndexed(
+                state->command_buffers[state->current_frame],
+                vulkan_cube_index_count(), 1, 0, 0, 0);
+        }
+    }
     vkCmdEndRenderPass(
         state->command_buffers[state->current_frame]);
     if (vkEndCommandBuffer(

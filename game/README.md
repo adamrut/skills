@@ -26,9 +26,11 @@ build\game-release\Release\game.exe
 The executable creates a native Windows window, initializes Vulkan instance, validation,
 device, queue, and surface state, creates the swap chain and depth resources, compiles and
 loads minimal cube shaders, and runs a fixed-update/variable-render loop with one visible
-perspective cube.
-Window resize and presentation failure recreate the swap-chain resources. No reusable mesh
-support, scene objects, or gameplay systems are created.
+perspective scene. Step 6 adds procedural indexed cube and plane meshes, reusable host-visible
+vertex/index buffer upload, per-object scale/translation matrices, independent object colors,
+and one plane with four cubes.
+Window resize and presentation failure recreate the swap-chain resources. No level layout,
+player, enemy, or gameplay systems are created.
 
 Run the foundation tests with:
 
