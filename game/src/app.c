@@ -19,6 +19,7 @@ AppResult app_init(App *app)
         return APP_RESULT_INITIALIZATION_FAILED;
     }
 
+    app->vulkan_state = NULL;
     app->running = true;
     app->close_requested = false;
     app->inactive_paused = false;

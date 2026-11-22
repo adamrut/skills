@@ -18,9 +18,14 @@ add_executable(game WIN32
     src/main.c
     src/app.c
     src/platform_win32.c
+    src/vulkan.c
 )
 
 target_link_libraries(game PRIVATE Vulkan::Vulkan)
+
+target_compile_definitions(game PRIVATE
+    $<$<CONFIG:Debug>:GAME_ENABLE_VULKAN_VALIDATION=1>
+)
 
 if(MSVC)
     target_compile_options(game PRIVATE /W4 /WX)
@@ -41,3 +46,22 @@ else()
 endif()
 
 add_test(NAME game_foundation COMMAND game_foundation_test)
+
+add_executable(game_vulkan_test
+    tests/vulkan_test.c
+    src/vulkan.c
+)
+
+target_link_libraries(game_vulkan_test PRIVATE Vulkan::Vulkan)
+
+if(MSVC)
+    target_compile_options(game_vulkan_test PRIVATE /W4 /WX)
+else()
+    target_compile_options(game_vulkan_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+endif()
+
+target_compile_definitions(game_vulkan_test PRIVATE
+    $<$<CONFIG:Debug>:GAME_ENABLE_VULKAN_VALIDATION=1>
+)
+
+add_test(NAME game_vulkan COMMAND game_vulkan_test)

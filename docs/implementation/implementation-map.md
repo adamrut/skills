@@ -10,3 +10,8 @@
   - [Platform boundary](../../game/src/platform_win32.c) owns the Win32 window, message handling, monotonic performance-counter timing, and native window cleanup.
   - [Foundation test](../../game/tests/foundation_test.c) verifies initialization, pause, fixed-step progress, activation, restart, and close state transitions.
   - [Build instructions](../../game/README.md) describe Debug and Release build commands.
+- [Vulkan integration](../../game/src/vulkan.c) owns instance and validation setup, physical/logical device selection, graphics/presentation queues, the Win32 surface, surface format/present-mode selection, surface recreation, and Vulkan cleanup.
+- [Vulkan interface](../../game/src/vulkan.h) exposes Vulkan initialization/shutdown/recreation and environment-independent format, present-mode, and queue-selection helpers.
+- Debug builds enable `VK_LAYER_KHRONOS_validation` and `VK_EXT_debug_utils`; missing validation support is a hard initialization failure.
+- The Win32 platform boundary creates the Vulkan state after native window creation and recreates the surface path on non-empty window resize; all Vulkan resources are destroyed before window cleanup.
+- [Vulkan test](../../game/tests/vulkan_test.c) checks queue, surface-format, and present-mode selection without requiring a live Vulkan device.

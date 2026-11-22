@@ -23,8 +23,9 @@ build\game-release\Release\game.exe
 - `R` restarts the application-owned state and timer.
 - `Escape` or the window close button closes the application.
 
-The executable creates a native Windows window and runs a fixed-update/variable-render
-loop with no Vulkan initialization or rendering work.
+The executable creates a native Windows window, initializes Vulkan instance, validation,
+device, queue, and surface state, and runs a fixed-update/variable-render loop. This
+step does not create a swap chain or render frames.
 
 Run the foundation tests with:
 

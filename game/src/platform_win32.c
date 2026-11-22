@@ -1,5 +1,6 @@
 #include "app.h"
 #include "platform.h"
+#include "vulkan.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
@@ -27,6 +28,21 @@ static LRESULT CALLBACK platform_window_proc(HWND window,
         return 0;
     case WM_SIZE:
         app_handle_event(platform_app_state, APP_EVENT_RESIZED);
+        if (platform_app_state != NULL &&
+            LOWORD(l_param) != 0 &&
+            HIWORD(l_param) != 0)
+        {
+            VulkanState *vulkan =
+                (VulkanState *)platform_app_state->vulkan_state;
+            if (vulkan != NULL)
+            {
+                if (vulkan_recreate_surface(vulkan) !=
+                    APP_RESULT_OK)
+                {
+                    app_handle_event(platform_app_state, APP_EVENT_CLOSE);
+                }
+            }
+        }
         return 0;
     case WM_CLOSE:
         app_handle_event(platform_app_state, APP_EVENT_CLOSE);
@@ -90,7 +106,7 @@ AppResult app_run_platform(App *app)
     window_class.hInstance = instance;
     window_class.hCursor =
         LoadCursorW(NULL, MAKEINTRESOURCEW(32512));
-    window_class.lpszClassName = L"VulkanIsometricRpgStep2";
+    window_class.lpszClassName = L"VulkanIsometricRpgStep3";
 
     if (RegisterClassExW(&window_class) == 0)
     {
@@ -104,7 +120,7 @@ AppResult app_run_platform(App *app)
 
     HWND window = CreateWindowExW(
         0,
-        L"VulkanIsometricRpgStep2",
+        L"VulkanIsometricRpgStep3",
         L"Vulkan Isometric RPG",
         WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT,
@@ -126,7 +142,7 @@ AppResult app_run_platform(App *app)
         frequency.QuadPart == 0)
     {
         platform_destroy_window(window);
-        UnregisterClassW(L"VulkanIsometricRpgStep2", instance);
+        UnregisterClassW(L"VulkanIsometricRpgStep3", instance);
         platform_app_state = NULL;
         return APP_RESULT_INITIALIZATION_FAILED;
     }
@@ -135,13 +151,25 @@ AppResult app_run_platform(App *app)
     if (QueryPerformanceCounter(&start_time) == 0)
     {
         platform_destroy_window(window);
-        UnregisterClassW(L"VulkanIsometricRpgStep2", instance);
+        UnregisterClassW(L"VulkanIsometricRpgStep3", instance);
         platform_app_state = NULL;
         return APP_RESULT_INITIALIZATION_FAILED;
     }
 
     ShowWindow(window, SW_SHOW);
     UpdateWindow(window);
+
+    VulkanState *vulkan_state = NULL;
+    AppResult vulkan_result =
+        vulkan_init(&vulkan_state, (void *)window);
+    if (vulkan_result != APP_RESULT_OK)
+    {
+        platform_destroy_window(window);
+        UnregisterClassW(L"VulkanIsometricRpgStep3", instance);
+        platform_app_state = NULL;
+        return vulkan_result;
+    }
+    app->vulkan_state = vulkan_state;
 
     AppResult result = APP_RESULT_OK;
     while (app->running)
@@ -177,13 +205,21 @@ AppResult app_run_platform(App *app)
         Sleep(1);
     }
 
+    VulkanState *active_vulkan =
+        (VulkanState *)app->vulkan_state;
+    if (active_vulkan != NULL)
+    {
+        vulkan_shutdown(active_vulkan);
+        app->vulkan_state = NULL;
+    }
+
     AppResult destroy_result = platform_destroy_window(window);
     if (destroy_result != APP_RESULT_OK)
     {
         result = destroy_result;
     }
 
-    UnregisterClassW(L"VulkanIsometricRpgStep2", instance);
+    UnregisterClassW(L"VulkanIsometricRpgStep3", instance);
     platform_app_state = NULL;
     return result;
 }

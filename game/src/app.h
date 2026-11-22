@@ -27,6 +27,7 @@ typedef enum AppEvent
 
 typedef struct App
 {
+    void *vulkan_state;
     bool running;
     bool close_requested;
     bool manually_paused;
