@@ -14,7 +14,11 @@ endif()
 
 find_package(Vulkan REQUIRED)
 
-add_executable(game src/main.c)
+add_executable(game WIN32
+    src/main.c
+    src/app.c
+    src/platform_win32.c
+)
 
 target_link_libraries(game PRIVATE Vulkan::Vulkan)
 
@@ -23,3 +27,17 @@ if(MSVC)
 else()
     target_compile_options(game PRIVATE -Wall -Wextra -Wpedantic -Werror)
 endif()
+
+enable_testing()
+add_executable(game_foundation_test
+    tests/foundation_test.c
+    src/app.c
+)
+
+if(MSVC)
+    target_compile_options(game_foundation_test PRIVATE /W4 /WX)
+else()
+    target_compile_options(game_foundation_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+endif()
+
+add_test(NAME game_foundation COMMAND game_foundation_test)

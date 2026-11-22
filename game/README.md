@@ -16,3 +16,19 @@ cmake -S game -B build/game-release -G "Visual Studio 17 2022" -A x64 -DCMAKE_BU
 cmake --build build/game-release --config Release
 build\game-release\Release\game.exe
 ```
+
+## Controls
+
+- `P` toggles pause and resume.
+- `R` restarts the application-owned state and timer.
+- `Escape` or the window close button closes the application.
+
+The executable creates a native Windows window and runs a fixed-update/variable-render
+loop with no Vulkan initialization or rendering work.
+
+Run the foundation tests with:
+
+```bat
+ctest --test-dir build/game-debug -C Debug --output-on-failure
+ctest --test-dir build/game-release -C Release --output-on-failure
+```
