@@ -201,6 +201,15 @@ AppResult app_run_platform(App *app)
 
         app_step(app, platform_get_seconds(frequency, now) -
                           platform_get_seconds(frequency, start_time));
+        VulkanState *active_vulkan =
+            (VulkanState *)app->vulkan_state;
+        if (active_vulkan != NULL &&
+            vulkan_render_frame(active_vulkan) != APP_RESULT_OK)
+        {
+            result = APP_RESULT_RUNTIME_FAILED;
+            app_handle_event(app, APP_EVENT_CLOSE);
+            break;
+        }
 
         Sleep(1);
     }

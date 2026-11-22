@@ -22,6 +22,10 @@ int main(void)
     VkPresentModeKHR selected_mode;
     uint32_t graphics_index = VK_QUEUE_FAMILY_IGNORED;
     uint32_t present_index = VK_QUEUE_FAMILY_IGNORED;
+    VkFormat depth_formats[2];
+    VkFormatFeatureFlags depth_features[2];
+    VkFormat selected_depth;
+    uint32_t in_flight;
 
     queue_families[0].queueFlags = VK_QUEUE_COMPUTE_BIT;
     queue_families[0].queueCount = 1;
@@ -59,6 +63,24 @@ int main(void)
         vulkan_choose_present_mode(modes, 2, &selected_mode) &&
             selected_mode == VK_PRESENT_MODE_MAILBOX_KHR,
         "present mode selection prefers mailbox then FIFO");
+
+    depth_formats[0] = VK_FORMAT_D24_UNORM_S8_UINT;
+    depth_formats[1] = VK_FORMAT_D32_SFLOAT;
+    depth_features[0] = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+    depth_features[1] = VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    failures |= expect_true(
+        vulkan_choose_depth_format(depth_formats, 2, depth_features,
+                                   &selected_depth) &&
+            selected_depth == VK_FORMAT_D32_SFLOAT,
+        "depth format selection requires depth-stencil attachment support");
+
+    in_flight = vulkan_choose_in_flight_limit(2, 2);
+    failures |= expect_true(
+        in_flight == 2,
+        "in-flight limit is capped by swap-chain image count");
+    failures |= expect_true(
+        vulkan_choose_in_flight_limit(1, 2) == 1,
+        "in-flight limit cannot exceed one-image swap chains");
 
     if (failures != 0)
     {

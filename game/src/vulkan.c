@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -23,6 +24,24 @@ struct VulkanState
     uint32_t present_queue_family;
     VkSurfaceFormatKHR surface_format;
     VkPresentModeKHR present_mode;
+    VkSwapchainKHR swapchain;
+    VkImage *swapchain_images;
+    VkImageView *swapchain_image_views;
+    VkFramebuffer *framebuffers;
+    uint32_t swapchain_image_count;
+    VkExtent2D swapchain_extent;
+    VkRenderPass render_pass;
+    VkImage depth_image;
+    VkDeviceMemory depth_memory;
+    VkImageView depth_image_view;
+    VkFormat depth_format;
+    VkCommandPool command_pool;
+    VkCommandBuffer *command_buffers;
+    VkSemaphore *image_available_semaphores;
+    VkSemaphore *render_finished_semaphores;
+    VkFence *in_flight_fences;
+    uint32_t in_flight_count;
+    uint32_t current_frame;
     void *native_window;
 };
 
@@ -148,6 +167,43 @@ bool vulkan_choose_present_mode(const VkPresentModeKHR *modes,
     return false;
 }
 
+bool vulkan_choose_depth_format(const VkFormat *formats,
+                                uint32_t format_count,
+                                const VkFormatFeatureFlags *features,
+                                VkFormat *selected)
+{
+    uint32_t i;
+    if (formats == NULL || features == NULL || selected == NULL)
+    {
+        return false;
+    }
+    for (i = 0; i < format_count; ++i)
+    {
+        if ((features[i] & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) != 0)
+        {
+            *selected = formats[i];
+            return true;
+        }
+    }
+    return false;
+}
+
+uint32_t vulkan_choose_in_flight_limit(uint32_t swapchain_image_count,
+                                       uint32_t preferred_limit)
+{
+    if (swapchain_image_count == 0)
+    {
+        return 0;
+    }
+    if (preferred_limit == 0)
+    {
+        return 1;
+    }
+    return preferred_limit < swapchain_image_count
+               ? preferred_limit
+               : swapchain_image_count;
+}
+
 #ifndef _WIN32
 AppResult vulkan_init(VulkanState **state, void *native_window)
 {
@@ -159,6 +215,12 @@ AppResult vulkan_init(VulkanState **state, void *native_window)
 }
 
 AppResult vulkan_recreate_surface(VulkanState *state)
+{
+    (void)state;
+    return APP_RESULT_RUNTIME_FAILED;
+}
+
+AppResult vulkan_render_frame(VulkanState *state)
 {
     (void)state;
     return APP_RESULT_RUNTIME_FAILED;
@@ -272,9 +334,35 @@ static AppResult select_device_and_queues(VulkanState *state)
     {
         uint32_t family_count = 0;
         VkQueueFamilyProperties *families = NULL;
+        uint32_t extension_count = 0;
+        VkExtensionProperties *extensions = NULL;
+        bool swapchain_supported = false;
         uint32_t graphics = VK_QUEUE_FAMILY_IGNORED;
         uint32_t present = VK_QUEUE_FAMILY_IGNORED;
         uint32_t f;
+
+        if (vkEnumerateDeviceExtensionProperties(
+                devices[i], NULL, &extension_count, NULL) == VK_SUCCESS &&
+            extension_count > 0)
+        {
+            extensions = (VkExtensionProperties *)malloc(
+                (size_t)extension_count * sizeof(VkExtensionProperties));
+            if (extensions != NULL &&
+                vkEnumerateDeviceExtensionProperties(
+                    devices[i], NULL, &extension_count, extensions) ==
+                    VK_SUCCESS)
+            {
+                swapchain_supported =
+                    has_extension(VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+                                  extensions,
+                                  extension_count);
+            }
+        }
+        free(extensions);
+        if (!swapchain_supported)
+        {
+            continue;
+        }
 
         vkGetPhysicalDeviceQueueFamilyProperties(
             devices[i], &family_count, NULL);
@@ -429,6 +517,7 @@ static AppResult create_logical_device(VulkanState *state)
     VkDeviceQueueCreateInfo queue_infos[2];
     VkPhysicalDeviceFeatures features;
     VkDeviceCreateInfo device_info;
+    const char *device_extensions[1];
     VkResult result;
     uint32_t queue_info_count = 1;
 
@@ -451,9 +540,12 @@ static AppResult create_logical_device(VulkanState *state)
         queue_info_count = 2;
     }
 
+    device_extensions[0] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
     device_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     device_info.queueCreateInfoCount = queue_info_count;
     device_info.pQueueCreateInfos = queue_infos;
+    device_info.enabledExtensionCount = 1;
+    device_info.ppEnabledExtensionNames = device_extensions;
     device_info.pEnabledFeatures = &features;
 
     result = vkCreateDevice(state->physical_device,
@@ -476,6 +568,599 @@ static AppResult create_logical_device(VulkanState *state)
                      state->present_queue_family,
                      0,
                      &state->present_queue);
+    return APP_RESULT_OK;
+}
+
+static uint32_t find_memory_type(VulkanState *state,
+                                 uint32_t type_bits,
+                                 VkMemoryPropertyFlags properties)
+{
+    VkPhysicalDeviceMemoryProperties memory_properties;
+    uint32_t i;
+
+    vkGetPhysicalDeviceMemoryProperties(state->physical_device,
+                                        &memory_properties);
+    for (i = 0; i < memory_properties.memoryTypeCount; ++i)
+    {
+        if ((type_bits & (1u << i)) != 0 &&
+            (memory_properties.memoryTypes[i].propertyFlags &
+             properties) == properties)
+        {
+            return i;
+        }
+    }
+    return UINT32_MAX;
+}
+
+static AppResult find_depth_format(VulkanState *state)
+{
+    const VkFormat candidates[4] = {
+        VK_FORMAT_D32_SFLOAT,
+        VK_FORMAT_D32_SFLOAT_S8_UINT,
+        VK_FORMAT_D24_UNORM_S8_UINT,
+        VK_FORMAT_D16_UNORM
+    };
+    VkFormat selected = VK_FORMAT_UNDEFINED;
+    uint32_t i;
+
+    for (i = 0; i < 4; ++i)
+    {
+        VkFormatProperties properties;
+        vkGetPhysicalDeviceFormatProperties(state->physical_device,
+                                            candidates[i],
+                                            &properties);
+        if ((properties.optimalTilingFeatures &
+             VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) != 0)
+        {
+            selected = candidates[i];
+            break;
+        }
+    }
+    if (selected == VK_FORMAT_UNDEFINED)
+    {
+        fprintf(stderr,
+                "Vulkan depth-format selection failed: no supported "
+                "depth-stencil attachment format is available.\n");
+        return APP_RESULT_INITIALIZATION_FAILED;
+    }
+    state->depth_format = selected;
+    return APP_RESULT_OK;
+}
+
+static void cleanup_swapchain_resources(VulkanState *state)
+{
+    uint32_t i;
+    if (state == NULL || state->device == VK_NULL_HANDLE)
+    {
+        return;
+    }
+    vkDeviceWaitIdle(state->device);
+
+    if (state->framebuffers != NULL)
+    {
+        for (i = 0; i < state->swapchain_image_count; ++i)
+        {
+            if (state->framebuffers[i] != VK_NULL_HANDLE)
+            {
+                vkDestroyFramebuffer(state->device,
+                                     state->framebuffers[i],
+                                     NULL);
+            }
+        }
+        free(state->framebuffers);
+        state->framebuffers = NULL;
+    }
+    if (state->swapchain_image_views != NULL)
+    {
+        for (i = 0; i < state->swapchain_image_count; ++i)
+        {
+            if (state->swapchain_image_views[i] != VK_NULL_HANDLE)
+            {
+                vkDestroyImageView(state->device,
+                                   state->swapchain_image_views[i],
+                                   NULL);
+            }
+        }
+        free(state->swapchain_image_views);
+        state->swapchain_image_views = NULL;
+    }
+    free(state->swapchain_images);
+    state->swapchain_images = NULL;
+    state->swapchain_image_count = 0;
+
+    if (state->depth_image_view != VK_NULL_HANDLE)
+    {
+        vkDestroyImageView(state->device, state->depth_image_view, NULL);
+        state->depth_image_view = VK_NULL_HANDLE;
+    }
+    if (state->depth_image != VK_NULL_HANDLE)
+    {
+        vkDestroyImage(state->device, state->depth_image, NULL);
+        state->depth_image = VK_NULL_HANDLE;
+    }
+    if (state->depth_memory != VK_NULL_HANDLE)
+    {
+        vkFreeMemory(state->device, state->depth_memory, NULL);
+        state->depth_memory = VK_NULL_HANDLE;
+    }
+    if (state->render_pass != VK_NULL_HANDLE)
+    {
+        vkDestroyRenderPass(state->device, state->render_pass, NULL);
+        state->render_pass = VK_NULL_HANDLE;
+    }
+    if (state->command_pool != VK_NULL_HANDLE)
+    {
+        vkDestroyCommandPool(state->device, state->command_pool, NULL);
+        state->command_pool = VK_NULL_HANDLE;
+    }
+    if (state->image_available_semaphores != NULL)
+    {
+        for (i = 0; i < state->in_flight_count; ++i)
+        {
+            if (state->image_available_semaphores[i] != VK_NULL_HANDLE)
+            {
+                vkDestroySemaphore(state->device,
+                                   state->image_available_semaphores[i],
+                                   NULL);
+            }
+        }
+        free(state->image_available_semaphores);
+        state->image_available_semaphores = NULL;
+    }
+    if (state->render_finished_semaphores != NULL)
+    {
+        for (i = 0; i < state->in_flight_count; ++i)
+        {
+            if (state->render_finished_semaphores[i] != VK_NULL_HANDLE)
+            {
+                vkDestroySemaphore(state->device,
+                                   state->render_finished_semaphores[i],
+                                   NULL);
+            }
+        }
+        free(state->render_finished_semaphores);
+        state->render_finished_semaphores = NULL;
+    }
+    if (state->in_flight_fences != NULL)
+    {
+        for (i = 0; i < state->in_flight_count; ++i)
+        {
+            if (state->in_flight_fences[i] != VK_NULL_HANDLE)
+            {
+                vkDestroyFence(state->device,
+                               state->in_flight_fences[i],
+                               NULL);
+            }
+        }
+        free(state->in_flight_fences);
+        state->in_flight_fences = NULL;
+    }
+    free(state->command_buffers);
+    state->command_buffers = NULL;
+    state->in_flight_count = 0;
+    state->current_frame = 0;
+}
+
+static AppResult create_render_pass(VulkanState *state)
+{
+    VkAttachmentDescription attachments[2];
+    VkAttachmentReference color_reference;
+    VkAttachmentReference depth_reference;
+    VkSubpassDescription subpass;
+    VkRenderPassCreateInfo render_pass_info;
+    VkResult result;
+
+    memset(attachments, 0, sizeof(attachments));
+    attachments[0].format = state->surface_format.format;
+    attachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
+    attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    attachments[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    attachments[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    attachments[0].finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+    attachments[1].format = state->depth_format;
+    attachments[1].samples = VK_SAMPLE_COUNT_1_BIT;
+    attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    attachments[1].finalLayout =
+        VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+    memset(&color_reference, 0, sizeof(color_reference));
+    color_reference.attachment = 0;
+    color_reference.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    memset(&depth_reference, 0, sizeof(depth_reference));
+    depth_reference.attachment = 1;
+    depth_reference.layout =
+        VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+    memset(&subpass, 0, sizeof(subpass));
+    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.colorAttachmentCount = 1;
+    subpass.pColorAttachments = &color_reference;
+    subpass.pDepthStencilAttachment = &depth_reference;
+
+    memset(&render_pass_info, 0, sizeof(render_pass_info));
+    render_pass_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    render_pass_info.attachmentCount = 2;
+    render_pass_info.pAttachments = attachments;
+    render_pass_info.subpassCount = 1;
+    render_pass_info.pSubpasses = &subpass;
+
+    result = vkCreateRenderPass(state->device,
+                                &render_pass_info,
+                                NULL,
+                                &state->render_pass);
+    if (result != VK_SUCCESS)
+    {
+        fprintf(stderr,
+                "Vulkan render-pass creation failed with VkResult %d.\n",
+                (int)result);
+        return APP_RESULT_INITIALIZATION_FAILED;
+    }
+    return APP_RESULT_OK;
+}
+
+static AppResult create_depth_resources(VulkanState *state)
+{
+    VkImageCreateInfo image_info;
+    VkMemoryRequirements memory_requirements;
+    VkMemoryAllocateInfo allocate_info;
+    VkImageViewCreateInfo view_info;
+    VkResult result;
+    uint32_t memory_type;
+
+    memset(&image_info, 0, sizeof(image_info));
+    image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    image_info.imageType = VK_IMAGE_TYPE_2D;
+    image_info.format = state->depth_format;
+    image_info.extent.width = state->swapchain_extent.width;
+    image_info.extent.height = state->swapchain_extent.height;
+    image_info.extent.depth = 1;
+    image_info.mipLevels = 1;
+    image_info.arrayLayers = 1;
+    image_info.samples = VK_SAMPLE_COUNT_1_BIT;
+    image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    image_info.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    result = vkCreateImage(state->device, &image_info, NULL,
+                           &state->depth_image);
+    if (result != VK_SUCCESS)
+    {
+        fprintf(stderr,
+                "Vulkan depth-image creation failed with VkResult %d.\n",
+                (int)result);
+        return APP_RESULT_INITIALIZATION_FAILED;
+    }
+    vkGetImageMemoryRequirements(state->device,
+                                 state->depth_image,
+                                 &memory_requirements);
+    memory_type = find_memory_type(
+        state, memory_requirements.memoryTypeBits,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (memory_type == UINT32_MAX)
+    {
+        fprintf(stderr,
+                "Vulkan depth-image allocation failed: no device-local "
+                "memory type is available.\n");
+        return APP_RESULT_INITIALIZATION_FAILED;
+    }
+
+    memset(&allocate_info, 0, sizeof(allocate_info));
+    allocate_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocate_info.allocationSize = memory_requirements.size;
+    allocate_info.memoryTypeIndex = memory_type;
+    result = vkAllocateMemory(state->device, &allocate_info, NULL,
+                              &state->depth_memory);
+    if (result != VK_SUCCESS)
+    {
+        fprintf(stderr,
+                "Vulkan depth-memory allocation failed with VkResult %d.\n",
+                (int)result);
+        return APP_RESULT_INITIALIZATION_FAILED;
+    }
+    if (vkBindImageMemory(state->device, state->depth_image,
+                          state->depth_memory, 0) != VK_SUCCESS)
+    {
+        fprintf(stderr,
+                "Vulkan depth-image memory binding failed.\n");
+        return APP_RESULT_INITIALIZATION_FAILED;
+    }
+
+    memset(&view_info, 0, sizeof(view_info));
+    view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    view_info.image = state->depth_image;
+    view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    view_info.format = state->depth_format;
+    view_info.subresourceRange.aspectMask =
+        VK_IMAGE_ASPECT_DEPTH_BIT |
+        (state->depth_format == VK_FORMAT_D32_SFLOAT_S8_UINT ||
+         state->depth_format == VK_FORMAT_D24_UNORM_S8_UINT
+             ? VK_IMAGE_ASPECT_STENCIL_BIT
+             : 0);
+    view_info.subresourceRange.levelCount = 1;
+    view_info.subresourceRange.layerCount = 1;
+    result = vkCreateImageView(state->device, &view_info, NULL,
+                               &state->depth_image_view);
+    if (result != VK_SUCCESS)
+    {
+        fprintf(stderr,
+                "Vulkan depth-image view creation failed with VkResult %d.\n",
+                (int)result);
+        return APP_RESULT_INITIALIZATION_FAILED;
+    }
+    return APP_RESULT_OK;
+}
+
+static AppResult create_swapchain_resources(VulkanState *state)
+{
+    VkSurfaceCapabilitiesKHR capabilities;
+    VkSwapchainCreateInfoKHR swapchain_info;
+    VkImageViewCreateInfo view_info;
+    VkCommandPoolCreateInfo pool_info;
+    VkCommandBufferAllocateInfo allocate_info;
+    VkSemaphoreCreateInfo semaphore_info;
+    VkFenceCreateInfo fence_info;
+    VkResult result;
+    VkSwapchainKHR old_swapchain;
+    uint32_t i;
+
+    cleanup_swapchain_resources(state);
+    if (find_depth_format(state) != APP_RESULT_OK)
+    {
+        return APP_RESULT_INITIALIZATION_FAILED;
+    }
+
+    result = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
+        state->physical_device, state->surface, &capabilities);
+    if (result != VK_SUCCESS)
+    {
+        fprintf(stderr,
+                "Vulkan swap-chain recreation failed while querying "
+                "surface capabilities (VkResult %d).\n", (int)result);
+        return APP_RESULT_RUNTIME_FAILED;
+    }
+    state->swapchain_extent = capabilities.currentExtent;
+    if (state->swapchain_extent.width == UINT32_MAX)
+    {
+        state->swapchain_extent.width =
+            capabilities.minImageExtent.width;
+    }
+    if (state->swapchain_extent.height == UINT32_MAX)
+    {
+        state->swapchain_extent.height =
+            capabilities.minImageExtent.height;
+    }
+    if (state->swapchain_extent.width <
+            capabilities.minImageExtent.width)
+    {
+        state->swapchain_extent.width =
+            capabilities.minImageExtent.width;
+    }
+    else if (state->swapchain_extent.width >
+             capabilities.maxImageExtent.width)
+    {
+        state->swapchain_extent.width =
+            capabilities.maxImageExtent.width;
+    }
+    if (state->swapchain_extent.height <
+            capabilities.minImageExtent.height)
+    {
+        state->swapchain_extent.height =
+            capabilities.minImageExtent.height;
+    }
+    else if (state->swapchain_extent.height >
+             capabilities.maxImageExtent.height)
+    {
+        state->swapchain_extent.height =
+            capabilities.maxImageExtent.height;
+    }
+
+    if (capabilities.minImageCount == 0)
+    {
+        fprintf(stderr,
+                "Vulkan swap-chain recreation failed: the surface "
+                "reports no usable image count.\n");
+        return APP_RESULT_RUNTIME_FAILED;
+    }
+    old_swapchain = state->swapchain;
+    memset(&swapchain_info, 0, sizeof(swapchain_info));
+    swapchain_info.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+    swapchain_info.surface = state->surface;
+    swapchain_info.minImageCount = capabilities.minImageCount;
+    if (capabilities.maxImageCount != 0 &&
+        swapchain_info.minImageCount > capabilities.maxImageCount)
+    {
+        swapchain_info.minImageCount = capabilities.maxImageCount;
+    }
+    swapchain_info.imageFormat = state->surface_format.format;
+    swapchain_info.imageColorSpace = state->surface_format.colorSpace;
+    swapchain_info.imageExtent = state->swapchain_extent;
+    swapchain_info.imageArrayLayers = 1;
+    swapchain_info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    swapchain_info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    swapchain_info.preTransform = capabilities.currentTransform;
+    swapchain_info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+    swapchain_info.presentMode = state->present_mode;
+    swapchain_info.clipped = VK_TRUE;
+    swapchain_info.oldSwapchain = old_swapchain;
+
+    result = vkCreateSwapchainKHR(state->device,
+                                  &swapchain_info,
+                                  NULL,
+                                  &state->swapchain);
+    if (result != VK_SUCCESS)
+    {
+        fprintf(stderr,
+                "Vulkan swap-chain creation failed with VkResult %d.\n",
+                (int)result);
+        return APP_RESULT_INITIALIZATION_FAILED;
+    }
+    if (old_swapchain != VK_NULL_HANDLE)
+    {
+        vkDestroySwapchainKHR(state->device, old_swapchain, NULL);
+    }
+
+    result = vkGetSwapchainImagesKHR(state->device,
+                                     state->swapchain,
+                                     &state->swapchain_image_count,
+                                     NULL);
+    if (result != VK_SUCCESS || state->swapchain_image_count == 0)
+    {
+        fprintf(stderr,
+                "Vulkan swap-chain image enumeration failed "
+                "(VkResult %d).\n", (int)result);
+        return APP_RESULT_INITIALIZATION_FAILED;
+    }
+    state->swapchain_images = (VkImage *)calloc(
+        state->swapchain_image_count, sizeof(VkImage));
+    state->swapchain_image_views = (VkImageView *)calloc(
+        state->swapchain_image_count, sizeof(VkImageView));
+    state->framebuffers = (VkFramebuffer *)calloc(
+        state->swapchain_image_count, sizeof(VkFramebuffer));
+    if (state->swapchain_images == NULL ||
+        state->swapchain_image_views == NULL ||
+        state->framebuffers == NULL)
+    {
+        return APP_RESULT_INITIALIZATION_FAILED;
+    }
+    if (vkGetSwapchainImagesKHR(state->device,
+                                state->swapchain,
+                                &state->swapchain_image_count,
+                                state->swapchain_images) != VK_SUCCESS)
+    {
+        return APP_RESULT_INITIALIZATION_FAILED;
+    }
+
+    for (i = 0; i < state->swapchain_image_count; ++i)
+    {
+        memset(&view_info, 0, sizeof(view_info));
+        view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        view_info.image = state->swapchain_images[i];
+        view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        view_info.format = state->surface_format.format;
+        view_info.subresourceRange.aspectMask =
+            VK_IMAGE_ASPECT_COLOR_BIT;
+        view_info.subresourceRange.levelCount = 1;
+        view_info.subresourceRange.layerCount = 1;
+        if (vkCreateImageView(state->device, &view_info, NULL,
+                              &state->swapchain_image_views[i]) !=
+            VK_SUCCESS)
+        {
+            fprintf(stderr,
+                    "Vulkan swap-chain image-view creation failed "
+                    "for image %u.\n", i);
+            return APP_RESULT_INITIALIZATION_FAILED;
+        }
+    }
+
+    if (create_render_pass(state) != APP_RESULT_OK ||
+        create_depth_resources(state) != APP_RESULT_OK)
+    {
+        return APP_RESULT_INITIALIZATION_FAILED;
+    }
+
+    for (i = 0; i < state->swapchain_image_count; ++i)
+    {
+        VkImageView attachments[2];
+        VkFramebufferCreateInfo framebuffer_info;
+        attachments[0] = state->swapchain_image_views[i];
+        attachments[1] = state->depth_image_view;
+        memset(&framebuffer_info, 0, sizeof(framebuffer_info));
+        framebuffer_info.sType =
+            VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        framebuffer_info.renderPass = state->render_pass;
+        framebuffer_info.attachmentCount = 2;
+        framebuffer_info.pAttachments = attachments;
+        framebuffer_info.width = state->swapchain_extent.width;
+        framebuffer_info.height = state->swapchain_extent.height;
+        framebuffer_info.layers = 1;
+        if (vkCreateFramebuffer(state->device,
+                                &framebuffer_info,
+                                NULL,
+                                &state->framebuffers[i]) != VK_SUCCESS)
+        {
+            fprintf(stderr,
+                    "Vulkan frame-buffer creation failed for "
+                    "swap-chain image %u.\n", i);
+            return APP_RESULT_INITIALIZATION_FAILED;
+        }
+    }
+
+    memset(&pool_info, 0, sizeof(pool_info));
+    pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    pool_info.queueFamilyIndex = state->graphics_queue_family;
+    pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    if (vkCreateCommandPool(state->device, &pool_info, NULL,
+                            &state->command_pool) != VK_SUCCESS)
+    {
+        fprintf(stderr,
+                "Vulkan graphics command-pool creation failed.\n");
+        return APP_RESULT_INITIALIZATION_FAILED;
+    }
+
+    state->in_flight_count = vulkan_choose_in_flight_limit(
+        state->swapchain_image_count, 2);
+    state->command_buffers = (VkCommandBuffer *)calloc(
+        state->in_flight_count, sizeof(VkCommandBuffer));
+    state->image_available_semaphores =
+        (VkSemaphore *)calloc(state->in_flight_count,
+                              sizeof(VkSemaphore));
+    state->render_finished_semaphores =
+        (VkSemaphore *)calloc(state->in_flight_count,
+                              sizeof(VkSemaphore));
+    state->in_flight_fences =
+        (VkFence *)calloc(state->in_flight_count, sizeof(VkFence));
+    if (state->command_buffers == NULL ||
+        state->image_available_semaphores == NULL ||
+        state->render_finished_semaphores == NULL ||
+        state->in_flight_fences == NULL)
+    {
+        return APP_RESULT_INITIALIZATION_FAILED;
+    }
+
+    memset(&allocate_info, 0, sizeof(allocate_info));
+    allocate_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocate_info.commandPool = state->command_pool;
+    allocate_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocate_info.commandBufferCount = state->in_flight_count;
+    if (vkAllocateCommandBuffers(state->device, &allocate_info,
+                                 state->command_buffers) != VK_SUCCESS)
+    {
+        fprintf(stderr,
+                "Vulkan command-buffer allocation failed.\n");
+        return APP_RESULT_INITIALIZATION_FAILED;
+    }
+
+    memset(&semaphore_info, 0, sizeof(semaphore_info));
+    semaphore_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    memset(&fence_info, 0, sizeof(fence_info));
+    fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    fence_info.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+    for (i = 0; i < state->in_flight_count; ++i)
+    {
+        if (vkCreateSemaphore(state->device, &semaphore_info, NULL,
+                              &state->image_available_semaphores[i]) !=
+                VK_SUCCESS ||
+            vkCreateSemaphore(state->device, &semaphore_info, NULL,
+                              &state->render_finished_semaphores[i]) !=
+                VK_SUCCESS ||
+            vkCreateFence(state->device, &fence_info, NULL,
+                          &state->in_flight_fences[i]) != VK_SUCCESS)
+        {
+            fprintf(stderr,
+                    "Vulkan frame synchronization object creation "
+                    "failed for in-flight frame %u.\n", i);
+            return APP_RESULT_INITIALIZATION_FAILED;
+        }
+    }
+    state->current_frame = 0;
     return APP_RESULT_OK;
 }
 
@@ -655,6 +1340,11 @@ AppResult vulkan_init(VulkanState **state, void *native_window)
         vulkan_shutdown(new_state);
         return APP_RESULT_INITIALIZATION_FAILED;
     }
+    if (create_swapchain_resources(new_state) != APP_RESULT_OK)
+    {
+        vulkan_shutdown(new_state);
+        return APP_RESULT_INITIALIZATION_FAILED;
+    }
 
     *state = new_state;
     fprintf(stdout,
@@ -669,33 +1359,176 @@ AppResult vulkan_recreate_surface(VulkanState *state)
     {
         return APP_RESULT_RUNTIME_FAILED;
     }
-    if (state->device != VK_NULL_HANDLE)
-    {
-        vkDestroyDevice(state->device, NULL);
-        state->device = VK_NULL_HANDLE;
-    }
-    if (state->surface != VK_NULL_HANDLE)
-    {
-        vkDestroySurfaceKHR(state->instance, state->surface, NULL);
-        state->surface = VK_NULL_HANDLE;
-    }
-    if (create_surface(state) != APP_RESULT_OK)
-    {
-        return APP_RESULT_RUNTIME_FAILED;
-    }
-
-    if (select_device_and_queues(state) != APP_RESULT_OK)
-    {
-        return APP_RESULT_RUNTIME_FAILED;
-    }
     if (select_surface_configuration(state) != APP_RESULT_OK)
     {
         return APP_RESULT_RUNTIME_FAILED;
     }
-    if (create_logical_device(state) != APP_RESULT_OK)
+    if (create_swapchain_resources(state) != APP_RESULT_OK)
     {
         return APP_RESULT_RUNTIME_FAILED;
     }
+    return APP_RESULT_OK;
+}
+
+AppResult vulkan_render_frame(VulkanState *state)
+{
+    VkSemaphore wait_semaphores[1];
+    VkPipelineStageFlags wait_stages[1];
+    VkSubmitInfo submit_info;
+    VkPresentInfoKHR present_info;
+    VkClearValue clear_values[2];
+    VkCommandBufferBeginInfo begin_info;
+    VkRenderPassBeginInfo render_pass_info;
+    VkRect2D render_area;
+    uint32_t image_index = 0;
+    VkResult result;
+
+    if (state == NULL || state->device == VK_NULL_HANDLE ||
+        state->swapchain == VK_NULL_HANDLE)
+    {
+        return APP_RESULT_RUNTIME_FAILED;
+    }
+
+    result = vkWaitForFences(
+        state->device, 1, &state->in_flight_fences[state->current_frame],
+        VK_TRUE, UINT64_MAX);
+    if (result != VK_SUCCESS)
+    {
+        fprintf(stderr,
+                "Vulkan frame fence wait failed with VkResult %d.\n",
+                (int)result);
+        return APP_RESULT_RUNTIME_FAILED;
+    }
+
+    result = vkAcquireNextImageKHR(
+        state->device,
+        state->swapchain,
+        UINT64_MAX,
+        state->image_available_semaphores[state->current_frame],
+        VK_NULL_HANDLE,
+        &image_index);
+    if (result == VK_ERROR_OUT_OF_DATE_KHR ||
+        result == VK_SUBOPTIMAL_KHR)
+    {
+        if (vulkan_recreate_surface(state) != APP_RESULT_OK)
+        {
+            return APP_RESULT_RUNTIME_FAILED;
+        }
+        return APP_RESULT_OK;
+    }
+    if (result != VK_SUCCESS)
+    {
+        fprintf(stderr,
+                "Vulkan image acquisition failed with VkResult %d.\n",
+                (int)result);
+        return APP_RESULT_RUNTIME_FAILED;
+    }
+
+    if (vkResetFences(state->device, 1,
+                      &state->in_flight_fences[state->current_frame]) !=
+        VK_SUCCESS)
+    {
+        fprintf(stderr, "Vulkan frame fence reset failed.\n");
+        return APP_RESULT_RUNTIME_FAILED;
+    }
+    if (vkResetCommandBuffer(
+            state->command_buffers[state->current_frame], 0) !=
+        VK_SUCCESS)
+    {
+        fprintf(stderr, "Vulkan command-buffer reset failed.\n");
+        return APP_RESULT_RUNTIME_FAILED;
+    }
+
+    memset(&begin_info, 0, sizeof(begin_info));
+    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    if (vkBeginCommandBuffer(
+            state->command_buffers[state->current_frame],
+            &begin_info) != VK_SUCCESS)
+    {
+        fprintf(stderr, "Vulkan command-buffer begin failed.\n");
+        return APP_RESULT_RUNTIME_FAILED;
+    }
+
+    memset(clear_values, 0, sizeof(clear_values));
+    clear_values[0].color.float32[0] = 0.08f;
+    clear_values[0].color.float32[1] = 0.12f;
+    clear_values[0].color.float32[2] = 0.20f;
+    clear_values[0].color.float32[3] = 1.0f;
+    clear_values[1].depthStencil.depth = 1.0f;
+    clear_values[1].depthStencil.stencil = 0;
+
+    memset(&render_area, 0, sizeof(render_area));
+    render_area.extent = state->swapchain_extent;
+    memset(&render_pass_info, 0, sizeof(render_pass_info));
+    render_pass_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    render_pass_info.renderPass = state->render_pass;
+    render_pass_info.framebuffer = state->framebuffers[image_index];
+    render_pass_info.renderArea = render_area;
+    render_pass_info.clearValueCount = 2;
+    render_pass_info.pClearValues = clear_values;
+    vkCmdBeginRenderPass(
+        state->command_buffers[state->current_frame],
+        &render_pass_info,
+        VK_SUBPASS_CONTENTS_INLINE);
+    vkCmdEndRenderPass(
+        state->command_buffers[state->current_frame]);
+    if (vkEndCommandBuffer(
+            state->command_buffers[state->current_frame]) != VK_SUCCESS)
+    {
+        fprintf(stderr, "Vulkan command-buffer recording failed.\n");
+        return APP_RESULT_RUNTIME_FAILED;
+    }
+
+    wait_semaphores[0] =
+        state->image_available_semaphores[state->current_frame];
+    wait_stages[0] =
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    memset(&submit_info, 0, sizeof(submit_info));
+    submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit_info.waitSemaphoreCount = 1;
+    submit_info.pWaitSemaphores = wait_semaphores;
+    submit_info.pWaitDstStageMask = wait_stages;
+    submit_info.commandBufferCount = 1;
+    submit_info.pCommandBuffers =
+        &state->command_buffers[state->current_frame];
+    submit_info.signalSemaphoreCount = 1;
+    submit_info.pSignalSemaphores =
+        &state->render_finished_semaphores[state->current_frame];
+    if (vkQueueSubmit(state->graphics_queue, 1, &submit_info,
+                      state->in_flight_fences[state->current_frame]) !=
+        VK_SUCCESS)
+    {
+        fprintf(stderr, "Vulkan frame submission failed.\n");
+        return APP_RESULT_RUNTIME_FAILED;
+    }
+
+    memset(&present_info, 0, sizeof(present_info));
+    present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+    present_info.waitSemaphoreCount = 1;
+    present_info.pWaitSemaphores =
+        &state->render_finished_semaphores[state->current_frame];
+    present_info.swapchainCount = 1;
+    present_info.pSwapchains = &state->swapchain;
+    present_info.pImageIndices = &image_index;
+    result = vkQueuePresentKHR(state->present_queue, &present_info);
+    if (result == VK_ERROR_OUT_OF_DATE_KHR ||
+        result == VK_SUBOPTIMAL_KHR)
+    {
+        if (vulkan_recreate_surface(state) != APP_RESULT_OK)
+        {
+            return APP_RESULT_RUNTIME_FAILED;
+        }
+    }
+    else if (result != VK_SUCCESS)
+    {
+        fprintf(stderr,
+                "Vulkan presentation failed with VkResult %d.\n",
+                (int)result);
+        return APP_RESULT_RUNTIME_FAILED;
+    }
+
+    state->current_frame =
+        (state->current_frame + 1) % state->in_flight_count;
     return APP_RESULT_OK;
 }
 
@@ -704,6 +1537,14 @@ void vulkan_shutdown(VulkanState *state)
     if (state == NULL)
     {
         return;
+    }
+    cleanup_swapchain_resources(state);
+    if (state->swapchain != VK_NULL_HANDLE)
+    {
+        vkDestroySwapchainKHR(state->device,
+                              state->swapchain,
+                              NULL);
+        state->swapchain = VK_NULL_HANDLE;
     }
     if (state->device != VK_NULL_HANDLE)
     {

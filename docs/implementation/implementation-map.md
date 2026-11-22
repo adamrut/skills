@@ -14,4 +14,7 @@
 - [Vulkan interface](../../game/src/vulkan.h) exposes Vulkan initialization/shutdown/recreation and environment-independent format, present-mode, and queue-selection helpers.
 - Debug builds enable `VK_LAYER_KHRONOS_validation` and `VK_EXT_debug_utils`; missing validation support is a hard initialization failure.
 - The Win32 platform boundary creates the Vulkan state after native window creation and recreates the surface path on non-empty window resize; all Vulkan resources are destroyed before window cleanup.
-- [Vulkan test](../../game/tests/vulkan_test.c) checks queue, surface-format, and present-mode selection without requiring a live Vulkan device.
+- Step 4 owns the swap chain, one image view per swap-chain image, depth image and view, render pass, frame buffers, graphics command pool/buffers, in-flight fences/semaphores, clear-color submission, and presentation.
+- The frame loop waits for the current in-flight fence, acquires an image, records a clear render pass, submits to the graphics queue, presents, and advances at most two frames of flight without reusing resources.
+- Swap-chain recreation is triggered by resize or out-of-date/suboptimal acquisition/presentation; it recreates image views, depth resources, frame buffers, commands, and synchronization while retaining the surface and logical device.
+- [Vulkan test](../../game/tests/vulkan_test.c) checks queue, surface-format, present-mode, depth-format, and in-flight-limit selection without requiring a live Vulkan device.
