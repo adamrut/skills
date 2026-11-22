@@ -295,6 +295,208 @@ bool vulkan_build_perspective(float aspect, float *matrix)
     return true;
 }
 
+bool vulkan_get_fixed_camera(VulkanFixedCamera *camera)
+{
+    if (camera == NULL)
+    {
+        return false;
+    }
+    camera->eye[0] = 6.0f;
+    camera->eye[1] = 6.0f;
+    camera->eye[2] = 6.0f;
+    camera->target[0] = 0.0f;
+    camera->target[1] = 0.0f;
+    camera->target[2] = 0.0f;
+    camera->world_up[0] = 0.0f;
+    camera->world_up[1] = 1.0f;
+    camera->world_up[2] = 0.0f;
+    camera->fov_y_degrees = 45.0f;
+    camera->near_plane = 0.1f;
+    camera->far_plane = 100.0f;
+    return true;
+}
+
+bool vulkan_get_fixed_level_bounds(VulkanLevelBounds *bounds)
+{
+    if (bounds == NULL)
+    {
+        return false;
+    }
+    bounds->min[0] = -6.0f;
+    bounds->min[1] = -1.0f;
+    bounds->min[2] = -6.0f;
+    bounds->max[0] = 6.0f;
+    bounds->max[1] = 6.0f;
+    bounds->max[2] = 6.0f;
+    return true;
+}
+
+bool vulkan_get_scene_center(float center[3])
+{
+    if (center == NULL)
+    {
+        return false;
+    }
+    center[0] = 0.0f;
+    center[1] = 0.0f;
+    center[2] = 0.0f;
+    return true;
+}
+
+bool vulkan_clamp_camera_position(float position[3],
+                                  const VulkanLevelBounds *bounds)
+{
+    uint32_t axis;
+    if (position == NULL || bounds == NULL)
+    {
+        return false;
+    }
+    for (axis = 0; axis < 3; ++axis)
+    {
+        if (!isfinite(position[axis]) ||
+            !isfinite(bounds->min[axis]) ||
+            !isfinite(bounds->max[axis]) ||
+            bounds->min[axis] > bounds->max[axis])
+        {
+            return false;
+        }
+        if (position[axis] < bounds->min[axis])
+        {
+            position[axis] = bounds->min[axis];
+        }
+        else if (position[axis] > bounds->max[axis])
+        {
+            position[axis] = bounds->max[axis];
+        }
+    }
+    return true;
+}
+
+static void multiply_mat4(const float *a, const float *b, float *out);
+
+bool vulkan_build_fixed_view(const VulkanFixedCamera *camera, float *matrix)
+{
+    float forward[3];
+    float right[3];
+    float up[3];
+    float forward_length;
+    float right_length;
+    uint32_t axis;
+
+    if (camera == NULL || matrix == NULL)
+    {
+        return false;
+    }
+    for (axis = 0; axis < 3; ++axis)
+    {
+        forward[axis] = camera->target[axis] - camera->eye[axis];
+        if (!isfinite(forward[axis]) ||
+            !isfinite(camera->world_up[axis]) ||
+            !isfinite(camera->eye[axis]) ||
+            !isfinite(camera->target[axis]))
+        {
+            return false;
+        }
+    }
+    forward_length =
+        sqrtf(forward[0] * forward[0] +
+              forward[1] * forward[1] +
+              forward[2] * forward[2]);
+    if (!isfinite(forward_length) || forward_length <= 0.0f)
+    {
+        return false;
+    }
+    forward[0] /= forward_length;
+    forward[1] /= forward_length;
+    forward[2] /= forward_length;
+
+    right[0] = forward[1] * camera->world_up[2] -
+               forward[2] * camera->world_up[1];
+    right[1] = forward[2] * camera->world_up[0] -
+               forward[0] * camera->world_up[2];
+    right[2] = forward[0] * camera->world_up[1] -
+               forward[1] * camera->world_up[0];
+    right_length =
+        sqrtf(right[0] * right[0] +
+              right[1] * right[1] +
+              right[2] * right[2]);
+    if (!isfinite(right_length) || right_length <= 0.0f)
+    {
+        return false;
+    }
+    right[0] /= right_length;
+    right[1] /= right_length;
+    right[2] /= right_length;
+
+    up[0] = right[1] * forward[2] - right[2] * forward[1];
+    up[1] = right[2] * forward[0] - right[0] * forward[2];
+    up[2] = right[0] * forward[1] - right[1] * forward[0];
+
+    memset(matrix, 0, sizeof(float) * 16);
+    matrix[0] = right[0];
+    matrix[4] = right[1];
+    matrix[8] = right[2];
+    matrix[1] = up[0];
+    matrix[5] = up[1];
+    matrix[9] = up[2];
+    matrix[2] = -forward[0];
+    matrix[6] = -forward[1];
+    matrix[10] = -forward[2];
+    matrix[12] = -(right[0] * camera->eye[0] +
+                   right[1] * camera->eye[1] +
+                   right[2] * camera->eye[2]);
+    matrix[13] = -(up[0] * camera->eye[0] +
+                   up[1] * camera->eye[1] +
+                   up[2] * camera->eye[2]);
+    matrix[14] = -(-forward[0] * camera->eye[0] +
+                    -forward[1] * camera->eye[1] +
+                    -forward[2] * camera->eye[2]);
+    matrix[15] = 1.0f;
+    return true;
+}
+
+bool vulkan_build_fixed_view_projection(float aspect,
+                                        const VulkanFixedCamera *camera,
+                                        float *view_projection)
+{
+    float perspective[16];
+    float view[16];
+    float fov_y;
+    float tan_half_fov;
+    float f;
+
+    if (aspect <= 0.0f || !isfinite(aspect) ||
+        camera == NULL || view_projection == NULL ||
+        camera->near_plane <= 0.0f ||
+        camera->far_plane <= camera->near_plane ||
+        camera->fov_y_degrees <= 0.0f ||
+        camera->fov_y_degrees >= 180.0f)
+    {
+        return false;
+    }
+    if (!vulkan_build_fixed_view(camera, view))
+    {
+        return false;
+    }
+
+    fov_y = camera->fov_y_degrees *
+            (3.14159265358979323846f / 180.0f);
+    tan_half_fov = tanf(fov_y * 0.5f);
+    f = 1.0f / tan_half_fov;
+    memset(perspective, 0, sizeof(perspective));
+    perspective[0] = f / aspect;
+    perspective[5] = -f;
+    perspective[10] =
+        camera->far_plane / (camera->far_plane - camera->near_plane);
+    perspective[11] = 1.0f;
+    perspective[14] =
+        -(camera->far_plane * camera->near_plane) /
+        (camera->far_plane - camera->near_plane);
+
+    multiply_mat4(perspective, view, view_projection);
+    return true;
+}
+
 #ifndef _WIN32
 AppResult vulkan_init(VulkanState **state, void *native_window)
 {
@@ -865,32 +1067,6 @@ static void fill_plane_indices(uint16_t *indices)
 {
     const uint16_t values[6] = {0,1,2, 0,2,3};
     memcpy(indices, values, sizeof(values));
-}
-
-static void build_look_at(float eye_x, float eye_y, float eye_z,
-                          float *matrix)
-{
-    float fx = -eye_x, fy = -eye_y, fz = -eye_z;
-    float length = sqrtf(fx*fx + fy*fy + fz*fz);
-    float ux, uy, uz, sx, sy, sz;
-    fx /= length; fy /= length; fz /= length;
-    ux = 0.0f; uy = 1.0f; uz = 0.0f;
-    sx = fy*uz - fz*uy;
-    sy = fz*ux - fx*uz;
-    sz = fx*uy - fy*ux;
-    length = sqrtf(sx*sx + sy*sy + sz*sz);
-    sx /= length; sy /= length; sz /= length;
-    ux = sy*fz - sz*fy;
-    uy = sz*fx - sx*fz;
-    uz = sx*fy - sy*fx;
-    memset(matrix, 0, sizeof(float) * 16);
-    matrix[0] = sx; matrix[4] = sy; matrix[8] = sz;
-    matrix[1] = ux; matrix[5] = uy; matrix[9] = uz;
-    matrix[2] = -fx; matrix[6] = -fy; matrix[10] = -fz;
-    matrix[12] = -(sx*eye_x + sy*eye_y + sz*eye_z);
-    matrix[13] = -(ux*eye_x + uy*eye_y + uz*eye_z);
-    matrix[14] = -(-fx*eye_x + -fy*eye_y + -fz*eye_z);
-    matrix[15] = 1.0f;
 }
 
 static void multiply_mat4(const float *a, const float *b, float *out)
@@ -2132,8 +2308,7 @@ AppResult vulkan_render_frame(VulkanState *state)
     VkRect2D render_area;
     VulkanUniformBufferObject uniform;
     VulkanPushConstants push_constants;
-    float perspective[16];
-    float view[16];
+    VulkanFixedCamera camera;
     float view_projection[16];
     VkDeviceSize vertex_offset;
     VulkanSceneObject scene[5];
@@ -2207,15 +2382,18 @@ AppResult vulkan_render_frame(VulkanState *state)
         return APP_RESULT_RUNTIME_FAILED;
     }
 
-    if (!vulkan_build_perspective(
-            (float)state->swapchain_extent.width /
-                (float)state->swapchain_extent.height,
-            perspective))
+    if (!vulkan_get_fixed_camera(&camera))
     {
         return APP_RESULT_RUNTIME_FAILED;
     }
-    build_look_at(3.8f, 3.2f, 3.8f, view);
-    multiply_mat4(perspective, view, view_projection);
+    if (!vulkan_build_fixed_view_projection(
+            (float)state->swapchain_extent.width /
+                (float)state->swapchain_extent.height,
+            &camera,
+            view_projection))
+    {
+        return APP_RESULT_RUNTIME_FAILED;
+    }
     memcpy(uniform.view_projection, view_projection,
            sizeof(uniform.view_projection));
     memcpy(state->uniform_mappings[state->current_frame],

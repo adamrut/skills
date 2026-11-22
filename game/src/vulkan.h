@@ -33,6 +33,20 @@ typedef struct VulkanSceneObject {
     float color[4];
 } VulkanSceneObject;
 
+typedef struct VulkanFixedCamera {
+    float eye[3];
+    float target[3];
+    float world_up[3];
+    float fov_y_degrees;
+    float near_plane;
+    float far_plane;
+} VulkanFixedCamera;
+
+typedef struct VulkanLevelBounds {
+    float min[3];
+    float max[3];
+} VulkanLevelBounds;
+
 AppResult vulkan_init(VulkanState **state, void *native_window);
 AppResult vulkan_recreate_surface(VulkanState *state);
 AppResult vulkan_render_frame(VulkanState *state);
@@ -67,5 +81,14 @@ bool vulkan_build_model_matrix(float translation_x,
                                float scale_z,
                                float *matrix);
 bool vulkan_build_perspective(float aspect, float *matrix);
+bool vulkan_get_fixed_camera(VulkanFixedCamera *camera);
+bool vulkan_get_fixed_level_bounds(VulkanLevelBounds *bounds);
+bool vulkan_get_scene_center(float center[3]);
+bool vulkan_clamp_camera_position(float position[3],
+                                  const VulkanLevelBounds *bounds);
+bool vulkan_build_fixed_view(const VulkanFixedCamera *camera, float *matrix);
+bool vulkan_build_fixed_view_projection(float aspect,
+                                        const VulkanFixedCamera *camera,
+                                        float *view_projection);
 
 #endif

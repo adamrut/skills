@@ -32,6 +32,13 @@ and one plane with four cubes.
 Window resize and presentation failure recreate the swap-chain resources. No level layout,
 player, enemy, or gameplay systems are created.
 
+Step 7 uses one fixed isometric camera at `(6, 6, 6)` looking at the procedural scene
+center `(0, 0, 0)`, with world-up `(0, 1, 0)`, a 45-degree vertical field of view, and
+`0.1`/`100.0` near/far planes. Camera-preview level bounds are `[-6, 6]` on X/Z and
+`[-1, 6]` on Y. The fixed view and aspect-dependent perspective are rebuilt in projection-
+view order each frame, and the same fixed camera is retained when swap-chain resources
+recreate after resize.
+
 Run the foundation tests with:
 
 ```bat

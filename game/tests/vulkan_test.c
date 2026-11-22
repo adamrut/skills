@@ -1,6 +1,7 @@
 #include "../src/vulkan.h"
 
 #include <stdio.h>
+#include <math.h>
 
 static int expect_true(int condition, const char *message)
 {
@@ -28,6 +29,12 @@ int main(void)
     uint32_t in_flight;
     float perspective[16];
     float model[16];
+    VulkanFixedCamera camera;
+    VulkanLevelBounds bounds;
+    float scene_center[3];
+    float camera_position[3];
+    float fixed_view[16];
+    float fixed_view_projection[16];
 
     queue_families[0].queueFlags = VK_QUEUE_COMPUTE_BIT;
     queue_families[0].queueCount = 1;
@@ -111,6 +118,55 @@ int main(void)
             perspective[5] != 0.0f &&
             perspective[11] == 1.0f,
         "perspective projection produces finite 45-degree camera parameters");
+    failures |= expect_true(
+        vulkan_get_fixed_camera(&camera) &&
+            camera.eye[0] == 6.0f &&
+            camera.eye[1] == 6.0f &&
+            camera.eye[2] == 6.0f &&
+            camera.target[0] == 0.0f &&
+            camera.target[1] == 0.0f &&
+            camera.target[2] == 0.0f &&
+            camera.world_up[1] == 1.0f &&
+            camera.near_plane == 0.1f &&
+            camera.far_plane == 100.0f,
+        "fixed camera uses a documented isometric eye, target, up, and depth range");
+    failures |= expect_true(
+        vulkan_get_scene_center(scene_center) &&
+            scene_center[0] == 0.0f &&
+            scene_center[1] == 0.0f &&
+            scene_center[2] == 0.0f &&
+            vulkan_get_fixed_camera(&camera) &&
+            camera.target[0] == scene_center[0] &&
+            camera.target[1] == scene_center[1] &&
+            camera.target[2] == scene_center[2],
+        "fixed camera target matches the existing procedural scene center");
+    failures |= expect_true(
+        vulkan_get_fixed_level_bounds(&bounds) &&
+            vulkan_build_fixed_view(&camera, fixed_view) &&
+            fixed_view[15] == 1.0f &&
+            vulkan_build_fixed_view_projection(
+                16.0f / 9.0f, &camera, fixed_view_projection),
+        "fixed view and projection construct valid separate camera matrices");
+    camera_position[0] = 20.0f;
+    camera_position[1] = -20.0f;
+    camera_position[2] = 20.0f;
+    failures |= expect_true(
+        vulkan_get_fixed_level_bounds(&bounds) &&
+            vulkan_clamp_camera_position(camera_position, &bounds) &&
+            camera_position[0] == bounds.max[0] &&
+            camera_position[1] == bounds.min[1] &&
+            camera_position[2] == bounds.max[2],
+        "camera preview positions are clamped to fixed level boundaries");
+    failures |= expect_true(
+        vulkan_build_fixed_view_projection(
+            0.5f, &camera, fixed_view_projection) &&
+            vulkan_build_fixed_view_projection(
+                2.0f, &camera, fixed_view_projection) &&
+            isfinite(fixed_view_projection[0]) &&
+            isfinite(fixed_view_projection[5]) &&
+            isfinite(fixed_view_projection[10]) &&
+            isfinite(fixed_view_projection[14]),
+        "fixed view projection remains finite across supported aspect ratios");
 
     if (failures != 0)
     {
