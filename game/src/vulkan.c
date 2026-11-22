@@ -293,9 +293,10 @@ bool vulkan_build_perspective(float aspect, float *matrix)
     memset(matrix, 0, sizeof(float) * 16);
     matrix[0] = f / aspect;
     matrix[5] = -f;
-    matrix[10] = 100.1f / 99.9f;
-    matrix[11] = 1.0f;
-    matrix[14] = -(2.0f * 100.0f * 0.1f) / 99.9f;
+    matrix[10] = 100.0f / (0.1f - 100.0f);
+    matrix[11] = -1.0f;
+    matrix[14] =
+        (100.0f * 0.1f) / (0.1f - 100.0f);
     return true;
 }
 
@@ -898,8 +899,9 @@ bool vulkan_build_fixed_view_projection(float aspect,
     perspective[0] = f / aspect;
     perspective[5] = -f;
     perspective[10] =
-        camera->far_plane / (camera->far_plane - camera->near_plane);
-    perspective[11] = 1.0f;
+        camera->far_plane /
+        (camera->near_plane - camera->far_plane);
+    perspective[11] = -1.0f;
     perspective[14] =
         -(camera->far_plane * camera->near_plane) /
         (camera->far_plane - camera->near_plane);

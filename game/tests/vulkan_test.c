@@ -128,7 +128,9 @@ int main(void)
         vulkan_build_perspective(16.0f / 9.0f, perspective) &&
             perspective[0] != 0.0f &&
             perspective[5] != 0.0f &&
-            perspective[11] == 1.0f,
+            perspective[5] < 0.0f &&
+            perspective[10] < 0.0f &&
+            perspective[11] == -1.0f,
         "perspective projection produces finite 45-degree camera parameters");
     failures |= expect_true(
         vulkan_get_fixed_camera(&camera) &&

@@ -34,3 +34,5 @@
 - The Win32 boundary in [platform integration](../../game/src/platform_win32.c) maps held movement keys to `App`, wires the existing level walkability predicate to collision checks, and preserves P, R, and Escape events.
 - [Vulkan integration](../../game/src/vulkan.c) appends a procedural humanoid-like player from existing cube meshes plus a colored facing marker to the level scene; player position and facing remain owned by `App`.
 - Foundation tests cover idle/movement, direction mapping, all eight facing directions, boundaries, and collision resolution; Vulkan tests cover the procedural player scene helper.
+- The rendering verification found and corrected an invalid Vulkan perspective matrix convention in [Vulkan integration](../../game/src/vulkan.c); the fixed camera now uses valid Vulkan clip depth and is covered by [Vulkan test](../../game/tests/vulkan_test.c).
+- Live rendering verification and its observed pass/fail report are recorded in [Vulkan rendering verification](./vulkan-rendering-verification.md).
